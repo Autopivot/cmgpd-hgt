@@ -39,6 +39,24 @@ def _drop_pairs_hash(pairs: Iterable[tuple[int, int]] | None) -> str:
     return h.hexdigest()[:12]
 
 
+def _ablation_tag(graph: HeteroData) -> str:
+    """Tag the graph's ablation state so cache files don't collide.
+
+    `compute_cohort_split` reads only `r_hw`, which `ablate_maternal_edges`
+    leaves untouched, so the drop_pairs hash is identical for ablated and
+    unablated runs. Without this tag, the second run would silently load
+    the first run's cached subgraphs.
+    """
+    abl = all(graph[et].edge_index.size(1) == 0 for et in config.ABLATE_EDGES)
+    return "abl" if abl else "full"
+
+
+# Bump on schema changes that affect subgraph contents (e.g. v2 introduced
+# per-cohort `person.x_macro` injection). Old cache files keyed without the
+# version tag will simply not match and get rebuilt.
+_CACHE_SCHEMA_VERSION = "v2"
+
+
 def subgraph_at_year(
     graph: HeteroData,
     t: int,
@@ -51,8 +69,21 @@ def subgraph_at_year(
     drop_pairs: r_hw pairs to forcibly remove on top of the time filter
                 (e.g., val/test pairs we don't want to leak even though
                 their edge_time is < t).
+
+    The output also carries a per-cohort macro vector at
+    `out["person"].x_macro` (shape `(K,)`), looked up from
+    `graph.macro_table` for year `t-1`. The encoder broadcasts this across
+    all persons at forward time, replacing the previous (leaky) static
+    snapshot of macro covariates.
     """
-    cache_key = f"sg_{t}_{_drop_pairs_hash(drop_pairs)}.pt"
+    if not hasattr(graph, "macro_table"):
+        raise RuntimeError(
+            "graph.macro_table is missing. The schema changed (macro covariates "
+            "are now injected per-cohort). Rerun `python -m src.main --stage "
+            "features --force` to rebuild the feature cache with the new schema."
+        )
+
+    cache_key = f"sg_{t}_{_CACHE_SCHEMA_VERSION}_{_ablation_tag(graph)}_{_drop_pairs_hash(drop_pairs)}.pt"
     cache_path = config.SUBGRAPH_CACHE_DIR / cache_key
     if use_cache and cache_path.exists():
         return torch.load(str(cache_path), weights_only=False)
@@ -85,6 +116,13 @@ def subgraph_at_year(
 
         out[edge_type].edge_index = ei[:, keep]
         out[edge_type].edge_time = et[keep] if et.numel() else et
+
+    # Stash per-cohort macro vector on the person store so the encoder picks
+    # it up at forward time. The "<t" causality means the last visible year
+    # is t-1; clamp to the table window for defensive indexing.
+    n_years = graph.macro_table.size(0)
+    macro_idx = max(0, min(t - 1 - config.MIN_YEAR, n_years - 1))
+    out["person"].x_macro = graph.macro_table[macro_idx].clone()
 
     if use_cache:
         cache_path.parent.mkdir(parents=True, exist_ok=True)

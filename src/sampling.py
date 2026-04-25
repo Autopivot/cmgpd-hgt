@@ -16,12 +16,17 @@ PairList = list[tuple[int, int, int]]  # (h, w, year)
 
 
 def build_year_to_women(pairs_by_year: dict[int, PairList]) -> dict[int, list[int]]:
-    """Map year -> list of wife indices observed in that cohort."""
+    """Map year -> list of distinct wife indices observed in that cohort.
+
+    Returns set semantics (deduped, first-seen order preserved) so downstream
+    `women.index(w)` calls are unambiguous and the encoder doesn't waste
+    compute on duplicate columns.
+    """
     out: dict[int, list[int]] = defaultdict(list)
     for y, plist in pairs_by_year.items():
         for _, w, _ in plist:
             out[y].append(w)
-    return dict(out)
+    return {y: list(dict.fromkeys(ws)) for y, ws in out.items()}
 
 
 def sample_negatives(
@@ -34,11 +39,15 @@ def sample_negatives(
     """Sample `k` distinct non-spouse women from this year's cohort.
 
     Falls back to sampling-with-replacement when the cohort is too small.
+    Returns `[]` when no valid candidate exists (i.e. cohort is just the true
+    wife) — the previous behaviour `[true_wife] * k` corrupted training (BCE
+    pushes σ(z)→1/(k+1) on the true positive) and biased eval AUC/log-loss.
+    Both call sites tolerate an empty list.
     """
     rng = rng or random
     candidates = [w for w in cohort_women if w != true_wife]
     if not candidates:
-        return [true_wife] * k  # degenerate cohort; loss will be near zero anyway
+        return []
     if len(candidates) >= k:
         return rng.sample(candidates, k)
     return [rng.choice(candidates) for _ in range(k)]

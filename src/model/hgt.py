@@ -28,21 +28,38 @@ log = logging.getLogger(__name__)
 # ── Per-node-type input embedders ──────────────────────────────────────
 
 class PersonEmbedder(nn.Module):
-    """Project the structured person features (sex/relationship/continuous/occ)
-    into a single HIDDEN-dim vector.
+    """Project the structured person features (sex/relationship/continuous/occ
+    + per-cohort macro vector) into a single HIDDEN-dim vector.
+
+    The per-cohort macro vector is stashed on the subgraph by
+    `subgraph_at_year` as a (K,) tensor at `data["person"].x_macro` and
+    broadcast across all persons here via `.expand` (a stride trick — no
+    fresh allocation), so macro covariates stay aligned with the cohort
+    year being scored instead of leaking the snapshot year.
     """
 
-    def __init__(self, n_continuous: int, n_occ: int, vocab_size_rel: int, hidden: int):
+    def __init__(self, n_continuous: int, n_occ: int, n_macro: int,
+                 vocab_size_rel: int, hidden: int):
         super().__init__()
         self.sex_embed = nn.Embedding(3, 8)              # 0/1/2
         self.rel_embed = nn.Embedding(vocab_size_rel, 16)
-        in_dim = 8 + 16 + n_continuous + n_occ
+        in_dim = 8 + 16 + n_continuous + n_occ + n_macro
         self.proj = nn.Sequential(nn.Linear(in_dim, hidden), nn.GELU(), nn.LayerNorm(hidden))
+        self.n_macro = n_macro
 
     def forward(self, data: HeteroData) -> torch.Tensor:
         s = self.sex_embed(data["person"].x_sex.clamp(0, 2))
         r = self.rel_embed(data["person"].x_relationship.clamp(min=0, max=self.rel_embed.num_embeddings - 1))
-        x = torch.cat([s, r, data["person"].x_continuous, data["person"].x_occupational], dim=-1)
+        N = s.size(0)
+        macro = data["person"].x_macro
+        if macro.dim() == 1:
+            macro = macro.unsqueeze(0).expand(N, -1)
+        x = torch.cat([
+            s, r,
+            data["person"].x_continuous,
+            data["person"].x_occupational,
+            macro,
+        ], dim=-1)
         return self.proj(x)
 
 
@@ -65,6 +82,7 @@ class HGT(nn.Module):
         metadata,
         n_continuous: int,
         n_occ: int,
+        n_macro: int,
         vocab_size_rel: int,
         n_household_feat: int,
         n_community_feat: int,
@@ -79,7 +97,7 @@ class HGT(nn.Module):
         self.dropout = dropout
 
         self.embedders = nn.ModuleDict({
-            "person": PersonEmbedder(n_continuous, n_occ, vocab_size_rel, hidden),
+            "person": PersonEmbedder(n_continuous, n_occ, n_macro, vocab_size_rel, hidden),
             "household": _SimpleEmbedder(n_household_feat, hidden),
             "community": _SimpleEmbedder(n_community_feat, hidden),
             "banner": _SimpleEmbedder(n_banner_feat, hidden),
@@ -144,8 +162,15 @@ class MarriageScorer(nn.Module):
 
 def build_model(graph: HeteroData) -> tuple[HGT, MarriageScorer]:
     """Build HGT + MarriageScorer matching the graph's feature shapes."""
+    if not hasattr(graph, "macro_table"):
+        raise RuntimeError(
+            "graph.macro_table is missing. Macro covariates are now injected "
+            "per-cohort. Rerun `python -m src.main --stage features --force` "
+            "to rebuild the feature cache with the new schema."
+        )
     n_continuous = graph["person"].x_continuous.size(1)
     n_occ = graph["person"].x_occupational.size(1)
+    n_macro = graph.macro_table.size(1)
     vocab_rel = max(int(graph["person"].x_relationship.max().item()) + 1,
                     config.CATEGORICAL_FEATURES["RELATIONSHIP"]["vocab_size"])
     n_hh = graph["household"].x.size(1)
@@ -155,6 +180,7 @@ def build_model(graph: HeteroData) -> tuple[HGT, MarriageScorer]:
         metadata=graph.metadata(),
         n_continuous=n_continuous,
         n_occ=n_occ,
+        n_macro=n_macro,
         vocab_size_rel=vocab_rel,
         n_household_feat=n_hh,
         n_community_feat=n_co,

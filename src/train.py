@@ -174,9 +174,13 @@ def train(
     cohort_women = build_year_to_women({**train_by_year, **val_by_year, **split["test"]})
 
     if smoke:
-        # Restrict to a tight window to make the first run cheap
+        # Restrict to a tight window to make the first run cheap.
+        # Years must land in the right buckets per compute_cohort_split:
+        # train ≤ TRAIN_END_YEAR (1855); val starts at 1856. 1852 was a bug
+        # — it falls in the train bucket, leaving val_by_year empty and the
+        # best-checkpoint selector inert.
         train_by_year = {y: p for y, p in train_by_year.items() if 1849 <= y <= 1851}
-        val_by_year = {y: p for y, p in val_by_year.items() if y == 1852}
+        val_by_year = {y: p for y, p in val_by_year.items() if y in (1856, 1857)}
         epochs = 2
 
     hgt, scorer = build_model(graph)

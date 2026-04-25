@@ -139,7 +139,10 @@ def test_split_buckets_are_disjoint(graph):
     reason="smoke run is sized for GPU; skip on CPU-only CI",
 )
 def test_smoke_end_to_end(tmp_path):
-    """Train 2 epochs on 1849-1851, eval on 1853-1854; expect metrics.json to exist."""
+    """Train 2 epochs on 1849-1851, eval on 1880-1881; expect metrics.json to exist
+    AND for the test pass to actually have scored some pairs (catches the previous
+    smoke-window bug where val/test years fell outside the cohort buckets)."""
+    import json
     from src.train import train
     from src.evaluate import evaluate
 
@@ -151,6 +154,11 @@ def test_smoke_end_to_end(tmp_path):
         assert ckpt.exists()
         out = evaluate(ckpt_path=ckpt, smoke=True)
         assert out.exists()
+        metrics = json.loads(out.read_text())
+        assert metrics["test"]["summary"]["n_pairs_scored"] > 0, (
+            "smoke eval scored no pairs — smoke year filters likely fall outside "
+            "val/test buckets again"
+        )
     finally:
         config.CHECKPOINT_DIR = orig_ckpt
 

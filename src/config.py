@@ -75,18 +75,23 @@ ABLATE_EDGES = [
 MISSING_CODES = [-1, -2, -3, -4, -9, -99, "NA", "", None]
 
 # ── Feature definitions ────────────────────────────────────────────────
-# Person-level continuous features. Order matters: TEMPORAL_INDICATOR_FEATURES
-# must appear after pure person-level columns so build_person_features can
-# splice in the per-year macro lookup.
+# Person-level continuous features (constant or causal up to cutoff_year).
+# AGE_IN_SUI was removed because it depends on the YEAR of the person's
+# latest observation, which under the current pipeline is the snapshot year
+# (≤ TEST_END_YEAR), not the cohort year — so the model received the
+# person's POST-marriage age. The model can recover age info from
+# BIRTHYEAR + cohort_year_z (in the per-cohort macro vector) if needed.
 CONTINUOUS_FEATURES = [
-    "AGE_IN_SUI",
     "BIRTHYEAR",
-    "grain_price_z",
-    "grain_price_yoy",
-    "era_id",
-    "disaster_flag",
 ]
-TEMPORAL_INDICATOR_FEATURES = [
+# Per-year macro covariates. NOT stored as static person features; instead
+# build_temporal_indicator_table → macro_table is attached to the graph as
+# a (n_years, K) lookup, and subgraph_at_year(t) stashes the row for year
+# (t-1) on the subgraph as person.x_macro for the encoder to broadcast.
+# This keeps macro features causally aligned with the cohort year being
+# scored, instead of leaking the snapshot year's macro state.
+MACRO_FEATURES = [
+    "cohort_year_z",
     "grain_price_z",
     "grain_price_yoy",
     "era_id",

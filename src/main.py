@@ -53,7 +53,12 @@ def stage_features(force: bool = False) -> None:
     import pandas as pd
 
     graph, id_maps = load_graph()
-    if hasattr(graph["person"], "x_continuous") and graph["person"].x_continuous.numel() and not force:
+    has_features = (
+        hasattr(graph["person"], "x_continuous")
+        and graph["person"].x_continuous.numel()
+        and hasattr(graph, "macro_table")  # per-cohort macro table required after schema v2
+    )
+    if has_features and not force:
         log.info("features already attached; skipping (use --force to recompute)")
         return
     df = pd.read_parquet(config.CLEAN_PARQUET_PATH)

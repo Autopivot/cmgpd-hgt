@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import time
 from datetime import datetime
 from pathlib import Path
@@ -125,7 +126,11 @@ def _evaluate_cohorts(
     top5_correct = 0
     top5_total = 0
     per_cohort = []
-    rng = np.random.default_rng(config.SEED)
+    # sample_negatives expects a stdlib random.Random (uses .sample / .choice
+    # signatures from the stdlib API, not numpy). Threading a seeded rng
+    # keeps pair-level ROC-AUC / PR-AUC / log-loss reproducible across runs
+    # of the same checkpoint.
+    rng = random.Random(config.SEED)
 
     for t, pairs in tqdm(pairs_by_year.items(), desc=f"eval[{label}]"):
         women = cohort_women_by_year.get(t, [])
@@ -144,7 +149,7 @@ def _evaluate_cohorts(
             pos_idx = women.index(true_w)
             pair_scores.append(float(scores[r, pos_idx]))
             pair_labels.append(1)
-            for neg_w in sample_negatives(t, true_w, women, k=config.NEG_PER_POS):
+            for neg_w in sample_negatives(t, true_w, women, k=config.NEG_PER_POS, rng=rng):
                 pair_scores.append(float(scores[r, women.index(neg_w)]))
                 pair_labels.append(0)
 
@@ -222,9 +227,11 @@ def evaluate(
     val_by_year = split["val"]
     test_by_year = split["test"]
     if smoke:
+        # Years must land in the right buckets per compute_cohort_split:
+        # train ≤ TRAIN_END_YEAR (1855), val (1856..1879), test (1880..1909).
         train_by_year = {y: p for y, p in train_by_year.items() if 1849 <= y <= 1851}
-        val_by_year = {y: p for y, p in val_by_year.items() if y == 1852}
-        test_by_year = {y: p for y, p in test_by_year.items() if y in (1853, 1854)}
+        val_by_year = {y: p for y, p in val_by_year.items() if y in (1856, 1857)}
+        test_by_year = {y: p for y, p in test_by_year.items() if y in (1880, 1881)}
     cohort_women = build_year_to_women({**train_by_year, **val_by_year, **test_by_year})
 
     hgt, scorer = _load_checkpoint(graph, ckpt_path, device)

@@ -55,8 +55,12 @@ than deleting the keys.
   sex) and timed `r_hw` marriage edges. Writes `data/processed/hgt_pipeline/graph.pt`.
 - **`stage1_features.py`** — attach `x_sex`, `x_relationship`,
   `x_continuous`, `x_occupational` to person nodes plus `.x` to other node
-  types. Continuous features include macro covariates (grain prices, era,
-  disasters) from `temporal_indicators.py`.
+  types. Also attaches a graph-level `macro_table` (year-indexed tensor of
+  macro covariates from `temporal_indicators.py`); `subgraph_at_year(t)`
+  looks up row `t-1` and stashes it on `person.x_macro` so the encoder
+  broadcasts cohort-aligned macro signal at forward time. Macro covariates
+  are NOT in `x_continuous` — keeping them static would leak the snapshot
+  year's macro state into earlier cohorts.
 - **`stage2_split.py`** — `compute_cohort_split` bins `r_hw` edges by
   marriage year into train (≤1855) / val (≤1879) / test (≤1909).
   `ablate_maternal_edges` zeros maternal edge tensors in place (keys
@@ -64,8 +68,12 @@ than deleting the keys.
   `r_hw` pairs removed.
 - **`stage3_temporal.py`** — `subgraph_at_year(g, t)` returns a copy with
   `edge_time < t` enforced on every edge type. Static edges (timed `0`,
-  e.g. `r_hc`, `r_cb`) are kept unconditionally. Subgraphs are cached on
-  disk under `SUBGRAPH_CACHE_DIR` keyed by `(t, sha1(drop_pairs))`.
+  e.g. `r_hc`, `r_cb`) are kept unconditionally. Also stashes
+  `person.x_macro = graph.macro_table[t-1]` on the output. Subgraphs are
+  cached on disk under `SUBGRAPH_CACHE_DIR` keyed by
+  `(t, schema_version, ablation_tag, sha1(drop_pairs))` — the ablation tag
+  is required because ablated and unablated runs produce different
+  subgraph contents but identical drop_pairs hashes.
 - **`src/model/hgt.py`** — `HGT` encoder (per-type embedders → stacked
   `HGTConv` with residual+LayerNorm+dropout) and `MarriageScorer`
   (MLP over `[h_m, h_w, |h_m-h_w|, h_m*h_w]`).

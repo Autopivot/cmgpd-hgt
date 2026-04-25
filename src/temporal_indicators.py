@@ -110,7 +110,7 @@ def build_temporal_indicator_table(years: Iterable[int] | None = None) -> pd.Dat
     """Return a year-indexed table of macro covariates.
 
     Columns:
-      YEAR, grain_price_z, grain_price_yoy, era_id, disaster_flag
+      YEAR + config.MACRO_FEATURES
 
     Forward-fills missing years so every YEAR in [MIN_YEAR, MAX_YEAR] is covered.
     The optional `years` argument is ignored for content (the full range is
@@ -143,7 +143,13 @@ def build_temporal_indicator_table(years: Iterable[int] | None = None) -> pd.Dat
     full["disaster_flag"] = (full["disaster_count"].fillna(0) > 0).astype(int)
     full["era_id"] = full["YEAR"].apply(_era_id).astype(int)
 
-    out = full[["YEAR", "grain_price_z", "grain_price_yoy", "era_id", "disaster_flag"]].copy()
+    # Normalized cohort year — replaces the leaky AGE_IN_SUI signal, since the
+    # model can derive age from (cohort_year_z, BIRTHYEAR) if it wants.
+    year_mean = float(full["YEAR"].mean())
+    year_std = float(full["YEAR"].std()) or 1.0
+    full["cohort_year_z"] = (full["YEAR"] - year_mean) / year_std
+
+    out = full[["YEAR", *config.MACRO_FEATURES]].copy()
 
     if years is not None:
         wanted = set(int(y) for y in years)

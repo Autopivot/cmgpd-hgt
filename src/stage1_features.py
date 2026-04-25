@@ -78,27 +78,22 @@ def build_person_features(
         .reset_index()
     )
 
-    # ── Load temporal indicator lookup (year → feature vector) ──
-    from .temporal_indicators import build_temporal_indicator_table
-
-    ti_table = build_temporal_indicator_table()
-    ti_cols = config.TEMPORAL_INDICATOR_FEATURES
-    ti_lookup: dict[int, list[float]] = {}
-    for _, ti_row in ti_table.iterrows():
-        ti_lookup[int(ti_row["YEAR"])] = [float(ti_row[c]) for c in ti_cols]
-
-    # Person-level continuous features (exclude temporal indicators)
-    person_cont_names = [
-        c for c in config.CONTINUOUS_FEATURES
-        if c not in config.TEMPORAL_INDICATOR_FEATURES
-    ]
-    ti_offset = len(person_cont_names)  # index where temporal cols start
+    # NOTE on residual temporal leakage: the latest-observation snapshot still
+    # propagates POST-marriage state for RELATIONSHIP, occupation (POSITION/
+    # TITLE/SALARY), and similar fields that change over time. The macro
+    # covariates have been moved to per-cohort injection (see build_macro_table
+    # + subgraph_at_year), but proper causality for these per-person columns
+    # would require per-cohort feature snapshots. Tracked separately.
 
     # ── Sex ──
     sex = torch.zeros(N, dtype=torch.long)
-    # ── Continuous features ──
+    # ── Continuous features (person-level only; macro covariates are per-cohort) ──
     cont_names = config.CONTINUOUS_FEATURES
     continuous = torch.zeros(N, len(cont_names), dtype=torch.float)
+    # Track missingness explicitly. Inferring from `continuous != 0` is wrong
+    # because legitimate zeros (e.g. AGE_IN_SUI == 0 for a newborn) would be
+    # misclassified as missing.
+    missing = torch.ones(N, len(cont_names), dtype=torch.bool)
     # ── Occupational flags ──
     occ_names = config.OCCUPATIONAL_COLUMNS
     occupational = torch.zeros(N, len(occ_names), dtype=torch.float)
@@ -120,18 +115,12 @@ def build_person_features(
         s = row.get("SEX")
         sex[idx] = int(s) if pd.notna(s) and int(s) in (1, 2) else 0
 
-        # Person-level continuous features (indices 0..ti_offset-1)
-        for j, col in enumerate(person_cont_names):
+        # Person-level continuous features
+        for j, col in enumerate(cont_names):
             val = row.get(col)
-            continuous[idx, j] = float(val) if pd.notna(val) else 0.0
-
-        # Temporal economic indicators (indices ti_offset..ti_offset+5)
-        obs_year = row.get("YEAR")
-        if pd.notna(obs_year):
-            yr = int(obs_year)
-            if yr in ti_lookup:
-                for k, val in enumerate(ti_lookup[yr]):
-                    continuous[idx, ti_offset + k] = val
+            if pd.notna(val):
+                continuous[idx, j] = float(val)
+                missing[idx, j] = False
 
         # Occupational (binary)
         for j, col in enumerate(occ_names):
@@ -154,8 +143,10 @@ def build_person_features(
     )
     relationship = encode_categorical(pd.Series(relationship_raw), rel_vocab)
 
-    # Z-score normalization on continuous features (plan §1.2)
-    mask = continuous != 0  # non-missing
+    # Z-score normalization on continuous features (plan §1.2).
+    # Mean/std are computed only over rows whose source value was actually
+    # present; missing rows pass through `torch.where` and stay at raw 0.
+    mask = ~missing  # True where the source value was non-missing
     for j in tqdm(
         range(continuous.size(1)),
         desc="Normalizing continuous features",
@@ -260,6 +251,41 @@ def build_banner_features(banner_ids: list[str]) -> torch.Tensor:
     return features
 
 
+# ── Per-cohort macro covariates ───────────────────────────────────────
+
+def build_macro_table() -> torch.Tensor:
+    """Build a (n_years, K) tensor of z-scored macro covariates.
+
+    Row index `y - config.MIN_YEAR` holds the macro vector for year `y`.
+    Z-score over the full year window so columns share a common scale and
+    legitimate zeros (e.g. era_id == 0 for the Qianlong block,
+    disaster_flag == 0 for no-disaster years) participate correctly in the
+    statistics — fixing the per-person z-score bug for these columns.
+    """
+    from .temporal_indicators import build_temporal_indicator_table
+
+    table = build_temporal_indicator_table().sort_values("YEAR").reset_index(drop=True)
+    expected = list(range(config.MIN_YEAR, config.MAX_YEAR + 1))
+    actual = table["YEAR"].tolist()
+    if actual != expected:
+        missing_years = sorted(set(expected) - set(actual))
+        raise RuntimeError(
+            f"temporal indicator table has gaps: {missing_years[:10]}{'…' if len(missing_years) > 10 else ''}"
+        )
+    arr = table[config.MACRO_FEATURES].to_numpy(dtype=np.float32)
+    macro = torch.from_numpy(arr.copy())
+    # Per-column z-score across the full year window. Already-z-scored cols
+    # (e.g. cohort_year_z, grain_price_z) are idempotent under this; era_id
+    # / grain_price_yoy / disaster_flag get standardized.
+    for j in range(macro.size(1)):
+        col = macro[:, j]
+        mean = col.mean()
+        std = col.std().clamp(min=1e-6)
+        macro[:, j] = (col - mean) / std
+    log.info("Macro table: shape=%s, cols=%s", tuple(macro.shape), config.MACRO_FEATURES)
+    return macro
+
+
 # ── Assemble all features into HeteroData ─────────────────────────────
 
 def attach_features(data, df: pd.DataFrame, id_maps: dict, cutoff_year: int = config.TEST_END_YEAR):
@@ -292,6 +318,9 @@ def attach_features(data, df: pd.DataFrame, id_maps: dict, cutoff_year: int = co
 
     log.info("Building banner features …")
     data["banner"].x = build_banner_features(banner_ids)
+
+    log.info("Building per-cohort macro table …")
+    data.macro_table = build_macro_table()
 
     # ── Lookup tensors for HybridDecoder (Phase 1) ─────────────────────
     N_person = len(person_ids)
