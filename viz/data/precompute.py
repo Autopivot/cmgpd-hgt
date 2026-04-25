@@ -31,6 +31,12 @@ from pathlib import Path
 
 import numpy as np
 
+# pyclustering 0.10.1 references numpy.warnings, which was removed in numpy 2.x.
+# Install a shim before pyclustering's package init runs.
+if not hasattr(np, "warnings"):
+    import warnings as _warnings
+    np.warnings = _warnings  # type: ignore[attr-defined]
+
 # ── Path bootstrap ─────────────────────────────────────────────────────
 # This file lives at viz/data/precompute.py; the project root is two
 # directories up. Add the project root to sys.path so ``import src`` works
@@ -539,8 +545,6 @@ def precompute_real(year: int, ablated: bool, device: str | None = None) -> dict
     # Build the patrilineal subgraph adjacency once; reuse for all pairs.
     log.info("building patri adjacency for path counts")
     sg_cpu_for_paths = _move_graph_to_device(subgraph_at_year(graph, year, drop_pairs=drop_global), "cpu")
-    # Pre-build sparse matrices once instead of per-pair.
-    import scipy.sparse as sp
     n_persons = sg_cpu_for_paths["person"].num_nodes
 
     def _ei(et):
@@ -551,50 +555,46 @@ def precompute_real(year: int, ablated: bool, device: str | None = None) -> dict
             return None
         return ei.cpu().numpy()
 
-    rows, cols = [], []
+    # Per-person neighbor sets through within-person patrilineal/sibling edges.
+    # We do NOT form the dense N×N product (the original implementation OOMed
+    # at ~159 GiB on the 266k-person graph because banner co-membership produces
+    # near-dense matrices). Instead we count 1- and 2-hop paths on the fly per
+    # scored pair, which is O(degree(m)) per query — fast since the average
+    # patri/sib degree is ~5–10.
+    nbr_pp: list[set[int]] = [set() for _ in range(n_persons)]
     for rel in ("r_fs", "r_fd", "r_sib"):
         ei = _ei(("person", rel, "person"))
         if ei is None:
             continue
-        rows.extend(ei[0].tolist())
-        cols.extend(ei[1].tolist())
-        rows.extend(ei[1].tolist())
-        cols.extend(ei[0].tolist())
-    if rows:
-        A_pp = sp.csr_matrix(
-            (np.ones(len(rows), dtype=np.float32), (rows, cols)),
-            shape=(n_persons, n_persons),
-        )
-    else:
-        A_pp = sp.csr_matrix((n_persons, n_persons), dtype=np.float32)
+        for s, d in zip(ei[0].tolist(), ei[1].tolist()):
+            nbr_pp[s].add(d)
+            nbr_pp[d].add(s)
 
-    def _bipartite(et_pn, n_other):
-        ei_a = _ei(et_pn)
-        if ei_a is None or n_other == 0:
-            return None
-        P2O = sp.csr_matrix(
-            (np.ones(ei_a.shape[1], dtype=np.float32), (ei_a[0], ei_a[1])),
-            shape=(n_persons, n_other),
-        )
-        M = P2O @ P2O.T
-        # Drop the diagonal so a person doesn't path-count to themselves.
-        M = M.tolil()
-        M.setdiag(0)
-        return M.tocsr()
-
-    A_hh = _bipartite(("person", "r_hh", "household"), sg_cpu_for_paths["household"].num_nodes)
-    A_cb = _bipartite(("person", "r_cb", "banner"), sg_cpu_for_paths["banner"].num_nodes)
-
-    A_one = A_pp.copy()
-    if A_hh is not None:
-        A_one = A_one + A_hh
-    if A_cb is not None:
-        A_one = A_one + A_cb
-    A_one = A_one.tocsr()
-    A_two_pp = (A_pp @ A_pp).tocsr()
+    # Per-person household memberships (set of household idx).
+    person_hhs: list[set[int]] = [set() for _ in range(n_persons)]
+    ei_hh = _ei(("person", "r_hh", "household"))
+    if ei_hh is not None:
+        for p, h in zip(ei_hh[0].tolist(), ei_hh[1].tolist()):
+            person_hhs[p].add(h)
+    # Banner co-membership is dropped from path counting: there are only
+    # 4 banners across 266k persons, so banner-sharing fires for ~25% of all
+    # pairs and is essentially noise for the pair-resolution task.
 
     def _path_count(m: int, w: int) -> int:
-        return int(A_one[m, w] + A_two_pp[m, w])
+        if m == w:
+            return 0
+        cnt = 0
+        nm = nbr_pp[m]
+        nw = nbr_pp[w]
+        # 1-hop within-person (kinship/sibling)
+        if w in nm:
+            cnt += 1
+        # 2-hop within-person: shared neighbour count
+        cnt += len(nm & nw)
+        # 1-hop "shares a household" (acts as a 1-hop community-style link)
+        if person_hhs[m] and person_hhs[w] and (person_hhs[m] & person_hhs[w]):
+            cnt += 1
+        return cnt
 
     # Reverse map idx -> PERSON_ID for output strings.
     inv_pmap: list[str] = [""] * n_persons
@@ -779,7 +779,9 @@ def _write_payload(payload: dict, out_path: Path) -> None:
 
 # ── CLI driver ─────────────────────────────────────────────────────────
 
-def _build_one(year: int, ablated: bool, mode: str) -> Path:
+def _build_one(year: int, ablated: bool, mode: str) -> tuple[Path, str]:
+    """Returns (output_path, actual_mode) so callers can log the real outcome."""
+    actual_mode = mode
     if mode == "stub":
         payload = precompute_stub(year, ablated)
     else:
@@ -789,10 +791,11 @@ def _build_one(year: int, ablated: bool, mode: str) -> Path:
             log.warning("real precompute failed for year=%d ablated=%s: %s -- falling back to stub",
                         year, ablated, exc)
             payload = precompute_stub(year, ablated)
+            actual_mode = "stub-fallback"
     _validate_payload(payload)
     out_path = _output_path(year, ablated)
     _write_payload(payload, out_path)
-    return out_path
+    return out_path, actual_mode
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -845,9 +848,9 @@ def main(argv: list[str] | None = None) -> int:
 
     for year, ablated in targets:
         t0 = time.perf_counter()
-        path = _build_one(year, ablated, mode)
+        path, actual_mode = _build_one(year, ablated, mode)
         log.info("done year=%d ablated=%s mode=%s -> %s in %.1fs",
-                 year, ablated, mode, path.name, time.perf_counter() - t0)
+                 year, ablated, actual_mode, path.name, time.perf_counter() - t0)
     return 0
 
 

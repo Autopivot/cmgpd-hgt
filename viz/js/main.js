@@ -25,15 +25,18 @@
  * dispatches 'state-changed' / 'cell-hovered-state' on window.
  */
 
-import { buildHoneycomb }   from './cluster_layout.js';
-import { renderHoneycomb }  from './honeycomb_render.js';
-import { renderContours }   from './contour_render.js';
-import { bindInteractions } from './interactions.js';
-import { initDrillPanel }   from './drill_panel.js';
-import { initLinkedViews }  from './linked_views.js';
+// Cache-buster `?v=N`: bump when fixing module bugs to defeat the browser's
+// sticky ES-module cache during dev. Static import URLs are cached absolutely,
+// so a query string is the simplest reliable invalidator.
+import { buildHoneycomb }   from './cluster_layout.js?v=2';
+import { renderHoneycomb }  from './honeycomb_render.js?v=2';
+import { renderContours }   from './contour_render.js?v=2';
+import { bindInteractions } from './interactions.js?v=2';
+import { initDrillPanel }   from './drill_panel.js?v=2';
+import { initLinkedViews }  from './linked_views.js?v=2';
 
-// --- Known years. Subagent A produces these. ---
-export const YEARS = [1882, 1885, 1888];
+// --- Known years. precompute.py writes a JSON per (year, ablation). ---
+export const YEARS = [1882, 1885, 1888, 1903, 1906, 1909];
 
 // --- Single global state. Mutated by interactions.js; read by renderAll. ---
 export const state = {

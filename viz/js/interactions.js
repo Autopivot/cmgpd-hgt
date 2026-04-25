@@ -108,9 +108,15 @@ export function bindInteractions(state, callbacks) {
   const svg = document.getElementById('hc-svg');
   if (svg) {
     svg.addEventListener('cell-clicked', (ev) => {
-      const id = ev.detail && ev.detail.cellId;
+      // honeycomb_render.js emits the full cell record as detail; the cell's
+      // identity field is `id` (matching cluster_layout.js's data model).
+      // Accept legacy `cellId` too for forward-compat.
+      const id = ev.detail && (ev.detail.cellId ?? ev.detail.id);
       if (id == null) return;
-      const shift = !!(ev.detail && ev.detail.shiftKey);
+      // shift-key state lives on the original DOM event; honeycomb_render
+      // doesn't forward it, so we read the most recent global modifier state.
+      const shift = !!(ev.detail && ev.detail.shiftKey)
+                 || !!(window.event && window.event.shiftKey);
       if (shift) {
         const exists = state.selectedCells.indexOf(id);
         if (exists >= 0) {
@@ -128,7 +134,7 @@ export function bindInteractions(state, callbacks) {
     });
 
     svg.addEventListener('cell-hovered', (ev) => {
-      const id = ev.detail ? ev.detail.cellId : null;
+      const id = ev.detail ? (ev.detail.cellId ?? ev.detail.id) : null;
       state.hoveredCell = id == null ? null : id;
       window.dispatchEvent(new CustomEvent('cell-hovered-state', {
         detail: { state, cellId: state.hoveredCell },
