@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HGT marriage-edge cohort viewer</title>
+  <link rel="stylesheet" href="css/main.css" />
+</head>
+<body>
+  <header>
+    <div class="header-row">
+      <h1>HGT marriage-edge cohort viewer</h1>
+      <div class="header-controls">
+        <button id="ablation-toggle" type="button" aria-pressed="false">
+          Condition: ablated
+        </button>
+        <div id="year-selector" class="year-selector" role="tablist" aria-label="Cohort year"></div>
+      </div>
+    </div>
+    <div id="status" class="status" role="status" aria-live="polite">Initialising.</div>
+  </header>
+
+  <main>
+    <section class="controls" aria-label="Channel weights and stride">
+      <div class="control-group">
+        <label for="w-confidence">Confidence weight <span id="w-confidence-val">1.00</span></label>
+        <input type="range" id="w-confidence" min="0" max="2" step="0.05" value="1" />
+      </div>
+      <div class="control-group">
+        <label for="w-patrilineal">Patrilineal weight <span id="w-patrilineal-val">1.00</span></label>
+        <input type="range" id="w-patrilineal" min="0" max="2" step="0.05" value="1" />
+      </div>
+      <div class="control-group">
+        <label for="w-endogamy">Endogamy weight <span id="w-endogamy-val">1.00</span></label>
+        <input type="range" id="w-endogamy" min="0" max="2" step="0.05" value="1" />
+      </div>
+      <div class="control-group">
+        <label for="stride">Stride <span id="stride-val">7</span></label>
+        <input type="range" id="stride" min="3" max="15" step="1" value="7" />
+      </div>
+      <div class="control-group control-chips">
+        <span class="chip-label">Filters</span>
+        <div id="filter-chips" class="chips" role="group" aria-label="Filter chips">
+          <button type="button" class="chip" data-filter="era" data-value="regular">Era: regular</button>
+          <button type="button" class="chip" data-filter="era" data-value="catchup">Era: catch-up</button>
+          <button type="button" class="chip" data-filter="era" data-value="late">Era: late</button>
+          <button type="button" class="chip" data-filter="hungarianCorrect" data-value="true">Hungarian correct</button>
+          <button type="button" class="chip" data-filter="hungarianCorrect" data-value="false">Hungarian incorrect</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="canvas" aria-label="Honeycomb cluster map">
+      <svg id="hc-svg" viewBox="0 0 960 640" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Honeycomb of marriage-pair clusters"></svg>
+    </section>
+
+    <section class="linked-views" aria-label="Linked views">
+      <div class="lv-block">
+        <h2>Score gap distribution</h2>
+        <svg id="lv-svg-gap" viewBox="0 0 960 120" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+      <div class="lv-block">
+        <h2>Confusion strip</h2>
+        <svg id="lv-svg-confusion" viewBox="0 0 960 120" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+    </section>
+  </main>
+
+  <aside id="drill-panel" aria-label="Drill panel">
+    <h2>Drill panel</h2>
+    <p class="drill-empty">Click a cell to inspect. Shift-click a second cell to compare.</p>
+  </aside>
+
+  <script src="https://cdn.jsdelivr.net/npm/d3-contour@4"></script>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
