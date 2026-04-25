@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.vite/
+*.local
+
+# Cohort JSONs are checked in upstream at viz/data/. They're copied into
+# public/data/ during scaffold + after each precompute rerun. Don't double
+# them in git — keep public/data/ as a working copy only.
+public/data/cohort_*.json
