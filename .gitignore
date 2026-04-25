@@ -1,0 +1,41 @@
+# ── Data (NOT redistributable; ICPSR-licensed) ─────────────────────────
+data/raw/
+data/processed/
+
+# ── Run artefacts ──────────────────────────────────────────────────────
+runs/
+checkpoints/
+
+# ── Python ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+.venv/
+venv/
+
+# ── Notebooks ──────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Editors / OS ───────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ── R ──────────────────────────────────────────────────────────────────
+.Rhistory
+.RData
+.Rproj.user/
+
+# ── Local environment hints ────────────────────────────────────────────
+.env
+.envrc
