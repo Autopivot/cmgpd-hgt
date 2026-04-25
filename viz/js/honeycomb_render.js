@@ -197,80 +197,10 @@ export function renderHoneycomb(svgEl, layout, opts = {}) {
     }
     svgEl.appendChild(gBorders);
 
-    // ----- Layer 4: cluster histograms -----
-    const gHist = document.createElementNS(SVG_NS, 'g');
-    gHist.setAttribute('class', 'cluster-histograms');
-
-    // Pre-collect per-cluster score-gap samples.
-    const perCluster = new Map();
-    for (const cell of layout.cells) {
-        if (cell.empty || cell.cluster === null) continue;
-        if (!perCluster.has(cell.cluster)) perCluster.set(cell.cluster, []);
-        // Use cell-mean score gap once per occupant (cheap proxy; we don't
-        // have raw per-pair score gaps in the layout — Subagent A holds
-        // those — so we approximate with cell-mean replicated by occupant count.)
-        const arr = perCluster.get(cell.cluster);
-        for (let i = 0; i < cell.pairIds.length; i++) arr.push(cell.meanScoreGap);
-    }
-
-    const NBINS = 6;
-    const HIST_W = 8 * NBINS;        // total width: 6 bins * 8px
-    const HIST_H = 24;
-    for (const cluster of layout.clusters) {
-        const samples = perCluster.get(cluster.id) || [];
-        if (samples.length === 0) continue;
-        // Bin range: [-2, +2] in score-gap units (matches the diverging scale).
-        const bins = new Array(NBINS).fill(0);
-        const lo = -2, hi = 2;
-        for (const v of samples) {
-            let bi = Math.floor((v - lo) / (hi - lo) * NBINS);
-            if (bi < 0) bi = 0;
-            if (bi >= NBINS) bi = NBINS - 1;
-            bins[bi]++;
-        }
-        const maxBin = Math.max(...bins, 1);
-
-        // Find this cluster's bottom-edge position: midpoint of cluster
-        // bounding box on x, bottom of bbox on y.
-        let xMin = Infinity, xMax = -Infinity, yMax = -Infinity;
-        for (const cid of cluster.cellIds) {
-            const cc = cellById.get(cid);
-            if (!cc) continue;
-            for (const [vx, vy] of cc.vertices) {
-                if (vx < xMin) xMin = vx;
-                if (vx > xMax) xMax = vx;
-                if (vy > yMax) yMax = vy;
-            }
-        }
-        if (!isFinite(xMin)) continue;
-        const midX = (xMin + xMax) / 2;
-        const [px, py] = project(midX, yMax);
-
-        const groupX = px - HIST_W / 2;
-        const groupY = py + 4;  // 4px gap below the cluster
-
-        const histGroup = document.createElementNS(SVG_NS, 'g');
-        histGroup.setAttribute('class', 'cluster-histogram');
-        histGroup.setAttribute('data-cluster-id', String(cluster.id));
-        histGroup.setAttribute('transform', `translate(${groupX.toFixed(2)},${groupY.toFixed(2)})`);
-
-        for (let bi = 0; bi < NBINS; bi++) {
-            const h = (bins[bi] / maxBin) * HIST_H;
-            const rect = document.createElementNS(SVG_NS, 'rect');
-            rect.setAttribute('x', String(bi * 8));
-            rect.setAttribute('y', String(HIST_H - h));
-            rect.setAttribute('width', '7');     // 8px slot, 1px gap
-            rect.setAttribute('height', h.toFixed(2));
-            // Tint each bar by its bin midpoint score-gap.
-            const binMid = lo + (bi + 0.5) * (hi - lo) / NBINS;
-            rect.setAttribute('fill', divergingColor(binMid));
-            rect.setAttribute('stroke', BORDER_COLOR);
-            rect.setAttribute('stroke-width', '0.3');
-            histGroup.appendChild(rect);
-        }
-        gHist.appendChild(histGroup);
-    }
-    svgEl.appendChild(gHist);
+    // (Layer 4 — per-cluster score-gap mini-histograms — removed by user
+    // request: the bars added clutter without adding signal beyond what the
+    // diverging cell fill already shows. The cell colors are the
+    // distribution.)
 }
 
 // ============================================================================

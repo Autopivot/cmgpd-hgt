@@ -221,7 +221,13 @@ main {
 .lv-block svg {
   display: block;
   width: 100%;
-  height: 120px;
+  /* Let height follow the viewBox-derived intrinsic aspect-ratio so the
+     SVG's rendered box matches its viewBox exactly — no letterboxing,
+     no horizontal-only stretch. linked_views.js sets viewBox 800x80 for
+     the gap strip and 800x60 for the confusion strip; the static value
+     in index.html matches each, so the initial render is already
+     consistent. */
+  height: auto;
 }
 
 aside#drill-panel {
