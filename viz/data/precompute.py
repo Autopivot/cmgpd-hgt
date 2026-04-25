@@ -531,10 +531,18 @@ def precompute_real(year: int, ablated: bool, device: str | None = None) -> dict
     n_components = min(PCA_COMPONENTS, z_norm.shape[0], z_norm.shape[1])
     pca = PCA(n_components=n_components, random_state=0)
     z_pca = pca.fit_transform(z_norm)
-    # MDS on a uniformly-sampled subset for speed if huge.
-    mds = MDS(n_components=2, n_init=1, max_iter=200, dissimilarity="euclidean",
+    # MDS step. Use precomputed dissimilarities and explicitly symmetrize
+    # them — sklearn 1.8+ MDS raises "Array must be symmetric" when the
+    # internal euclidean computation leaves D[i,j] != D[j,i] by even a few
+    # ULPs (observed on several catch-up/late cohorts in this dataset).
+    from scipy.spatial.distance import pdist, squareform
+    diss = squareform(pdist(z_pca, metric="euclidean"))
+    diss = (diss + diss.T) * 0.5  # exact symmetric
+    np.fill_diagonal(diss, 0.0)
+    mds = MDS(n_components=2, n_init=1, max_iter=200,
+              dissimilarity="precomputed",
               random_state=0, normalized_stress="auto")
-    mds_coords = mds.fit_transform(z_pca)
+    mds_coords = mds.fit_transform(diss)
 
     cluster_labels, k_clusters = _run_xmeans_or_kmeans(z_pca, DEFAULT_K_MAX)
 
