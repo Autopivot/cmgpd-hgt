@@ -225,6 +225,22 @@ function ensureLayout() {
   state.layout = layout;
 }
 
+// Build a render-options object from the live SVG viewBox. Both
+// renderHoneycomb and renderContours expect `opts = { width, height,
+// marginPx }` as their last arg and silently fall back to (800, 600)
+// defaults when those keys are missing — so passing the state object
+// (which has no width/height) made cells + contours render in an
+// 800×600 sub-region of the 960×640 SVG, leaving a strip of empty
+// canvas on the right and bottom.
+function _renderOpts(svg) {
+  const vb = svg && svg.viewBox ? svg.viewBox.baseVal : null;
+  return {
+    width: (vb && vb.width) || 960,
+    height: (vb && vb.height) || 640,
+    marginPx: 40,
+  };
+}
+
 export async function renderAll(stateRef = state) {
   const svg = document.getElementById('hc-svg');
   if (!svg) return;
@@ -235,12 +251,14 @@ export async function renderAll(stateRef = state) {
   ensureLayout();
   if (!stateRef.layout) return;
 
+  const opts = _renderOpts(svg);
+
   // 1) Honeycomb base.
-  renderHoneycomb(svg, stateRef.layout, stateRef);
+  renderHoneycomb(svg, stateRef.layout, opts);
 
   // 2) Contours over the honeycomb.
   console.time('contour');
-  renderContours(svg, stateRef.layout, stateRef.weights, stateRef.stride, stateRef);
+  renderContours(svg, stateRef.layout, stateRef.weights, stateRef.stride, opts);
   console.timeEnd('contour');
 
   // 3) Apply filter dimming on the freshly-rendered cells.
@@ -257,7 +275,7 @@ export function renderContoursOnly(stateRef = state) {
   const svg = document.getElementById('hc-svg');
   if (!svg || !stateRef.layout) return;
   console.time('contour');
-  renderContours(svg, stateRef.layout, stateRef.weights, stateRef.stride, stateRef);
+  renderContours(svg, stateRef.layout, stateRef.weights, stateRef.stride, _renderOpts(svg));
   console.timeEnd('contour');
 }
 

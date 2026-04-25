@@ -15,8 +15,36 @@ const COLUMNS = [
 ];
 
 // Per-cell sort state. Map<cellId, {key, dir}> where dir is 'asc' | 'desc'.
+// Bounded to SORT_STATE_CAP entries with LRU eviction so a long session of
+// clicking many cells doesn't grow the map unbounded. The state-changed
+// listener at the bottom of this file also prunes entries for cells no
+// longer in state.selectedCells, so this cap is a safety net rather than
+// the primary cleanup mechanism. Map preserves insertion order, which we
+// abuse for cheap LRU: any access re-inserts the entry; the oldest
+// (first) key is the LRU victim when at capacity.
+const SORT_STATE_CAP = 32;
 const sortState = new Map();
 const DEFAULT_SORT = { key: 'score_gap', dir: 'desc' };
+
+function _sortGet(cellId) {
+  if (!sortState.has(cellId)) return null;
+  // Touch: move to most-recently-used position.
+  const v = sortState.get(cellId);
+  sortState.delete(cellId);
+  sortState.set(cellId, v);
+  return v;
+}
+
+function _sortSet(cellId, value) {
+  if (sortState.has(cellId)) {
+    sortState.delete(cellId);
+  } else if (sortState.size >= SORT_STATE_CAP) {
+    // Evict LRU (first entry by insertion order).
+    const oldest = sortState.keys().next().value;
+    if (oldest !== undefined) sortState.delete(oldest);
+  }
+  sortState.set(cellId, value);
+}
 
 function injectStyles() {
   if (document.querySelector('#drill-panel-styles')) return;
@@ -174,7 +202,7 @@ function buildTable(cellId, pairs, sort) {
       th.appendChild(arrow);
     }
     th.addEventListener('click', () => {
-      const cur = sortState.get(cellId) || { ...DEFAULT_SORT };
+      const cur = _sortGet(cellId) || { ...DEFAULT_SORT };
       let next;
       if (cur.key === c.key) {
         next = { key: c.key, dir: cur.dir === 'asc' ? 'desc' : 'asc' };
@@ -185,7 +213,7 @@ function buildTable(cellId, pairs, sort) {
         next = { key: c.key,
           dir: numericCols.includes(c.key) ? 'desc' : 'asc' };
       }
-      sortState.set(cellId, next);
+      _sortSet(cellId, next);
       // Re-render in place by dispatching a state-changed event so the
       // panel rebuilds; this keeps a single render path.
       window.dispatchEvent(new CustomEvent('state-changed',
@@ -366,8 +394,8 @@ function renderOne(root, state, cell) {
   }
 
   const pairs = getPairsForCell(state, cell);
-  const sort = sortState.get(cell.id) || { ...DEFAULT_SORT };
-  if (!sortState.has(cell.id)) sortState.set(cell.id, sort);
+  const sort = _sortGet(cell.id) || { ...DEFAULT_SORT };
+  if (!sortState.has(cell.id)) _sortSet(cell.id, sort);
   const sorted = sortPairs(pairs, sort);
 
   const sec = document.createElement('div');
@@ -400,8 +428,8 @@ function renderTwo(root, state, cellA, cellB) {
       continue;
     }
     const pairs = getPairsForCell(state, cell);
-    const sort = sortState.get(cell.id) || { ...DEFAULT_SORT };
-    if (!sortState.has(cell.id)) sortState.set(cell.id, sort);
+    const sort = _sortGet(cell.id) || { ...DEFAULT_SORT };
+    if (!sortState.has(cell.id)) _sortSet(cell.id, sort);
     const sorted = sortPairs(pairs, sort);
     sec.appendChild(buildHeader(cell, pairs));
     sec.appendChild(buildTable(cell.id, sorted, sort));
