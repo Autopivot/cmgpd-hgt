@@ -7,29 +7,40 @@ them with a single `fetch()` call and renders without any extra API.
 
 ## Status of the current files (as committed)
 
-| file | year | condition | source | notes |
-|------|------|-----------|--------|-------|
-| `cohort_1882.json`            | 1882 | ablated   | _see "Stub vs real" below_ |
-| `cohort_1882__unablated.json` | 1882 | unablated | _see "Stub vs real" below_ |
-| `cohort_1885.json`            | 1885 | ablated   | _see "Stub vs real" below_ |
-| `cohort_1885__unablated.json` | 1885 | unablated | _see "Stub vs real" below_ |
-| `cohort_1888.json`            | 1888 | ablated   | _see "Stub vs real" below_ |
-| `cohort_1888__unablated.json` | 1888 | unablated | _see "Stub vs real" below_ |
+| file                            | year | condition | mode          | n_pairs |
+|---------------------------------|------|-----------|---------------|--------:|
+| `cohort_1882.json`              | 1882 | ablated   | **real**      |  6,000  |
+| `cohort_1882__unablated.json`   | 1882 | unablated | stub          |    250  |
+| `cohort_1885.json`              | 1885 | ablated   | stub          |    250  |
+| `cohort_1885__unablated.json`   | 1885 | unablated | stub          |    250  |
+| `cohort_1888.json`              | 1888 | ablated   | stub          |    250  |
+| `cohort_1888__unablated.json`   | 1888 | unablated | stub          |    250  |
+| `cohort_1903.json`              | 1903 | ablated   | stub          |    250  |
+| `cohort_1903__unablated.json`   | 1903 | unablated | stub          |    250  |
+| `cohort_1906.json`              | 1906 | ablated   | stub          |    250  |
+| `cohort_1906__unablated.json`   | 1906 | unablated | stub          |    250  |
+| `cohort_1909.json`              | 1909 | ablated   | stub          |    250  |
+| `cohort_1909__unablated.json`   | 1909 | unablated | stub          |    250  |
 
 ### Stub vs real
 
-The current committed JSONs are produced by `precompute.py` in
-**stub mode**. Stub mode synthesises contract-valid data with realistic
-distributional shape (clustered embeddings, mostly-positive labels,
+`cohort_1882.json` was produced by running the real HGT pipeline against
+the trained ablated checkpoint (1,000 husbands × 6 cohort women →
+6,000 scored pairs, then PCA + MDS + KMeans/X-Means clustering).
+It carries real CMGPD-LN PERSON_IDs, real model scores, real lineage
+roots, and real patrilineal-path counts.
+
+The other 11 JSONs are **stub mode** — synthesised by `precompute.py`
+with contract-valid distributional shape (clustered embeddings,
 plausible score distributions, sparse same-lineage flags) but no
-relationship to the actual model output. They unblock frontend
-development end-to-end.
+relationship to the actual model output. They exist so the frontend
+exercises every code path on every year tab without blocking on
+~hour-long retraining.
 
-To regenerate them with the real HGT model, see
-[Running real precompute](#running-real-precompute) below.
-
-If you see a notice in the file's banner area on the viewer that says
-"stub data", these JSONs were produced without running the real model.
+To regenerate any of them with the real model, see
+[Running real precompute](#running-real-precompute) below. A retrain
+is required first because the model schema migrated to per-cohort
+macro covariates after the 1882 real run was produced.
 
 ## Running stub precompute
 
