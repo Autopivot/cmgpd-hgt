@@ -32,11 +32,25 @@ algorithms ported from the reference at
 
 ## Run
 
+Frontend (always required):
+
 ```bash
 cd viz-mas
 npm install
-npm run dev   # serves on http://localhost:5190/
+npm run dev    # → http://localhost:5190/
 ```
+
+Backend (optional — enables live agent streaming + slider sync):
+
+```bash
+cd viz-mas
+pip install -r server/requirements.txt
+uvicorn server.main:app --host 127.0.0.1 --port 8001 --reload
+```
+
+Without the backend, the frontend falls back to:
+- static cohort JSONs in `public/data/`
+- a client-side simulation of the agent stream (same event shapes, same component decomposition as the server)
 
 The 12 cohort JSONs were copied into `public/data/` at scaffold time. To
 refresh from the upstream `viz/data/` directory after a precompute rerun:
@@ -45,12 +59,23 @@ refresh from the upstream `viz/data/` directory after a precompute rerun:
 cp ../viz/data/cohort_*.json public/data/
 ```
 
-## What's stubbed (not done yet)
+## What's wired now (formerly the stub list)
 
-1. **Live MAS+HGT backend** — agent-battle and rule-injector are local placeholders. The user-facing wiring (event bus, API surface) is in place; the FastAPI side is the next deliverable.
-2. **WebSocket negotiation stream** — V5 currently calls `getAgentRound()` which returns a static 3-agent fixture per pair. The real stream from `/api/negotiate/{id}/stream` will replace it.
-3. **Motif glyph component** — V6 lists motifs as text only; the reference's circular SVG glyph (DRNL-coloured, src/dst as stars) will land with the motif backend.
-4. **SHAP waterfall** — V5 in the reference has a per-pair SHAP explanation; this requires running explainer code against the trained HGT and is deferred.
+1. **FastAPI backend** at `server/main.py` — endpoints: `/api/health`, `/api/metrics`, `/api/pair`, `/api/shap/{pair_id}`, `/api/rules` (GET/POST), and `WS /api/negotiate/{pair_id}/stream`. Vite proxies `/api/*` (HTTP + WebSocket) to `127.0.0.1:8001`.
+2. **WebSocket negotiation stream** — V5 opens a WS to `/api/negotiate/{id}/stream`; events arrive incrementally (`round-start` → 6× `agent` → `final`). Falls back to client-side simulation if the backend isn't running.
+3. **Motif glyphs** — `MotifGlyph.vue` ports the reference's DRNL-coloured node + relation-coloured edge SVG glyph. V6 uses it inline next to each motif row.
+4. **SHAP waterfall** — V5 renders a per-pair component-attribution waterfall under the agent rows. Heuristic decomposition: bias + paternal lineage + sibling overlap + household share + banner match + macro era + endogamy penalty, each gated by the live macro slider weights from V6. The "FINAL (logit)" bar at the bottom shows where the components add up to the model's actual prediction.
+
+## How the views connect
+
+```
+V6 sliders/checkboxes ── postRules() ──→ FastAPI in-memory state
+        │                                    │
+        └─ bus.emit('rules-updated') ────────┴─→ V5 re-streams + recomputes SHAP
+V3 click / lasso ── bus.emit('hex-select') ──→ V4 (bipartite) + V5 (negotiate)
+```
+
+So moving a V6 slider while a V5 round is open re-streams the rounds with the new weights and re-renders the waterfall — closes the loop between rule input and per-pair explanation.
 
 ## Connection to existing repo
 

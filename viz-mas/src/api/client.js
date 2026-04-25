@@ -136,42 +136,226 @@ export async function getPair({ year, ablation = 'ablated', id } = {}) {
 }
 
 /**
- * View 5 — agent battle (placeholder).
- * Until the live FastAPI + LLM backend lands, returns a static fixture.
+ * View 5 — agent battle.
+ *
+ * Streamed mode (preferred): if the FastAPI backend is up, opens a WebSocket
+ * to /api/negotiate/{pair_id}/stream and forwards the JSON events to
+ * `onEvent`. The backend yields one event per agent with a small delay so
+ * the arena fills incrementally. Returns a `close()` cancel handle.
+ *
+ * Static mode (fallback): if the backend isn't reachable, replays the same
+ * sequence client-side via setTimeout so V5 still feels live offline.
  */
-export async function getAgentRound({ year, ablation = 'ablated', pair_id } = {}) {
-  const pair = await getPair({ year, ablation, id: pair_id })
-  if (!pair) return null
+export function streamAgentRound({ year, ablation = 'ablated', pair_id, onEvent, onDone, onError } = {}) {
+  if (pair_id == null) { onDone && onDone(); return { close: () => {} } }
+
+  // Try WebSocket first.
+  const wsProto = location.protocol === 'https:' ? 'wss' : 'ws'
+  const url = `${wsProto}://${location.host}/api/negotiate/${pair_id}/stream?year=${year}&ablation=${ablation}`
+  let ws
+  try {
+    ws = new WebSocket(url)
+  } catch {
+    return _fallbackStream({ year, ablation, pair_id, onEvent, onDone, onError })
+  }
+  let closed = false
+  let gotAny = false
+  ws.addEventListener('message', (ev) => {
+    gotAny = true
+    try { onEvent && onEvent(JSON.parse(ev.data)) } catch (e) { onError && onError(e) }
+  })
+  ws.addEventListener('close', () => { if (!closed) onDone && onDone() })
+  ws.addEventListener('error', () => {
+    // Fall back to client-simulated stream if the connection failed
+    // before any event arrived (most likely the backend isn't running).
+    if (!gotAny && !closed) {
+      try { ws.close() } catch {}
+      _fallbackStream({ year, ablation, pair_id, onEvent, onDone, onError })
+    }
+  })
   return {
-    pair_id,
-    rounds: [
-      { agent: 'paternal-prior', score: pair.score, note: 'baseline patrilineal scaffold' },
-      { agent: 'macro-temporal', score: pair.score - 0.1, note: 'cohort year + grain prices' },
-      { agent: 'lineage-consistency', score: pair.same_lineage ? -1.5 : pair.score, note: pair.same_lineage ? 'same lineage penalty' : 'cross-lineage ok' },
-    ],
-    final_score: pair.score,
-    accept: pair.hungarian_correct === true,
+    close: () => { closed = true; try { ws.close() } catch {} },
+  }
+}
+
+/** Client-side simulation of the WebSocket stream — same event shapes,
+ *  same component decomposition as server/main.py:negotiate_stream. */
+async function _fallbackStream({ year, ablation, pair_id, onEvent, onDone, onError }) {
+  try {
+    const pair = await getPair({ year, ablation, id: pair_id })
+    if (!pair) { onDone && onDone(); return }
+    onEvent && onEvent({ event: 'round-start', pair_id, husband_id: pair.husband_id, wife_id: pair.wife_id })
+    const w = await getRules()
+    const m = w.macro_obj
+    const patri = pair.patri_path_count || 0
+    const sameLin = !!pair.same_lineage
+    const era = pair.era || 'regular'
+    const eraScore = { regular: 0.4, catchup: 0, late: 0.2 }[era] ?? 0
+    const agents = [
+      { agent: 'paternal-prior',   score: m.paternal_lineage * (0.6 * patri) - 1.0, note: 'patrilineal scaffold; +0.6 logit per visible 2-hop path' },
+      { agent: 'sibling-overlap',  score: m.sibling_overlap  * (patri >= 2 ? 0.35 : 0), note: 'shared siblings via father-of-husband' },
+      { agent: 'household-share',  score: m.household_share  * (patri >= 3 ? 0.45 : 0), note: 'pre-marriage co-residence' },
+      { agent: 'banner-match',     score: m.banner_match     * 0.3, note: 'same banner endogamy bonus' },
+      { agent: 'macro-temporal',   score: m.macro_era        * eraScore, note: `cohort era = ${era}` },
+      { agent: 'endogamy-veto',    score: sameLin ? -2.0 : 0,   note: sameLin ? 'same-lineage = strict veto' : 'cross-lineage ok' },
+    ]
+    for (const a of agents) {
+      await new Promise(r => setTimeout(r, 280))
+      onEvent && onEvent({ event: 'agent', ...a })
+    }
+    await new Promise(r => setTimeout(r, 200))
+    onEvent && onEvent({
+      event: 'final',
+      final_score: pair.score,
+      score_gap: pair.score_gap,
+      accept: pair.hungarian_correct === true || (pair.score > 0 && pair.hungarian_correct == null),
+      hungarian_correct: pair.hungarian_correct,
+    })
+    onDone && onDone()
+  } catch (e) {
+    onError && onError(e)
+  }
+}
+
+/** SHAP-style waterfall — heuristic decomposition of the pair's logit. */
+export async function getShap({ year, ablation = 'ablated', pair_id } = {}) {
+  // Try backend first.
+  try {
+    const r = await http.get(`/shap/${pair_id}`, { params: { year, ablation } })
+    return r.data
+  } catch {
+    // Local fallback — mirrors server/main.py:_shap_components()
+    const pair = await getPair({ year, ablation, id: pair_id })
+    if (!pair) return null
+    const w = await getRules()
+    const m = w.macro_obj
+    const patri = pair.patri_path_count || 0
+    const sameLin = !!pair.same_lineage
+    const era = pair.era || 'regular'
+    const eraScore = { regular: 0.4, catchup: 0, late: 0.2 }[era] ?? 0
+    const parts = [
+      { label: 'bias',                value: -1.0 },
+      { label: 'paternal lineage',    value: m.paternal_lineage * (0.6 * patri) },
+      { label: 'sibling overlap',     value: m.sibling_overlap  * (patri >= 2 ? 0.35 : 0) },
+      { label: 'household share',     value: m.household_share  * (patri >= 3 ? 0.45 : 0) },
+      { label: 'banner match',        value: m.banner_match     * 0.3 },
+      { label: 'macro era',           value: m.macro_era        * eraScore },
+      { label: 'endogamy penalty',    value: sameLin ? -2.0 : 0 },
+    ]
+    const sumPredicted = parts.reduce((s, p) => s + p.value, 0)
+    const ratio = sumPredicted !== 0 ? pair.score / sumPredicted : 1
+    parts.forEach(p => { p.scaled = p.value * ratio })
+    parts.push({ label: 'FINAL (logit)', value: pair.score, scaled: pair.score, is_total: true })
+    parts.push({ label: 'score gap',     value: pair.score_gap, scaled: pair.score_gap, is_total: true })
+    return {
+      pair_id,
+      husband_id: pair.husband_id,
+      wife_id: pair.wife_id,
+      components: parts,
+    }
   }
 }
 
 /**
- * View 6 — rule weights (macro/micro motifs).
- * Static configuration for now; real backend will accept POST to update.
+ * View 6 — rule weights (macro/micro motifs). Two cooperating shapes:
+ *   `macro`  — array form, used by V6's UI rendering loop
+ *   `macro_obj` — object form keyed by `id`, used by SHAP/agent computation
+ * Both are kept in sync. POST writes accept either.
  */
+const RULE_DEFAULTS = {
+  macro: [
+    { id: 'paternal_lineage', label: 'Paternal lineage proximity', weight: 1.0 },
+    { id: 'sibling_overlap',  label: 'Shared siblings',            weight: 1.0 },
+    { id: 'household_share',  label: 'Same household history',     weight: 1.0 },
+    { id: 'banner_match',     label: 'Same banner',                weight: 0.5 },
+    { id: 'macro_era',        label: 'Cohort year + grain prices', weight: 0.8 },
+  ],
+  motifs: [
+    {
+      id: 'm1_father_brother', title: 'Father → brother → wife', enabled: true, example_count: 2103,
+      example: {
+        num_nodes: 4, src_local: 0, dst_local: 3,
+        drnl_labels: [1, 2, 2, 1],
+        edges: [[0, 1], [1, 2], [2, 3]],
+        edge_types: ['r_fs', 'r_sib', 'r_hw'],
+      },
+    },
+    {
+      id: 'm2_uncle_in_law', title: 'Uncle-in-law triangle', enabled: true, example_count: 894,
+      example: {
+        num_nodes: 5, src_local: 0, dst_local: 4,
+        drnl_labels: [1, 2, 3, 2, 1],
+        edges: [[0, 1], [1, 2], [2, 3], [3, 4]],
+        edge_types: ['r_fs', 'r_sib', 'r_fd', 'r_hw'],
+      },
+    },
+    {
+      id: 'm3_same_household', title: 'Pre-marriage co-residence', enabled: false, example_count: 1456,
+      example: {
+        num_nodes: 3, src_local: 0, dst_local: 2,
+        drnl_labels: [1, 0, 1],
+        edges: [[0, 1], [1, 2], [0, 2]],
+        edge_types: ['r_hh', 'r_hh', 'r_hw'],
+      },
+    },
+    {
+      id: 'm4_banner_endog', title: 'Banner endogamy chain', enabled: true, example_count: 327,
+      example: {
+        num_nodes: 4, src_local: 0, dst_local: 3,
+        drnl_labels: [1, 0, 0, 1],
+        edges: [[0, 1], [1, 2], [2, 3]],
+        edge_types: ['r_cb', 'r_cb', 'r_hw'],
+      },
+    },
+  ],
+}
+
+let _ruleCache = null
+
+function _normalize(rules) {
+  // Return the (macro, motifs, macro_obj) tuple from any of the input shapes.
+  const macro = Array.isArray(rules.macro)
+    ? rules.macro
+    : RULE_DEFAULTS.macro.map(d => ({ ...d, weight: rules.macro?.[d.id] ?? d.weight }))
+  const motifs = Array.isArray(rules.motifs)
+    ? rules.motifs.map((m, i) => ({ ...RULE_DEFAULTS.motifs[i], ...m }))
+    : RULE_DEFAULTS.motifs.map(d => ({ ...d, enabled: rules.motifs?.[d.id] ?? d.enabled }))
+  const macro_obj = {}
+  for (const r of macro) macro_obj[r.id] = r.weight
+  return { macro, motifs, macro_obj }
+}
+
+/** Load current rule state. Tries the backend; falls back to defaults. */
 export async function getRules() {
-  return {
-    macro: [
-      { id: 'paternal_lineage', label: 'Paternal lineage proximity', weight: 1.0 },
-      { id: 'sibling_overlap',  label: 'Shared siblings',            weight: 1.0 },
-      { id: 'household_share',  label: 'Same household history',     weight: 1.0 },
-      { id: 'banner_match',     label: 'Same banner',                weight: 0.5 },
-      { id: 'macro_era',        label: 'Cohort year + grain prices', weight: 0.8 },
-    ],
-    motifs: [
-      { id: 'm1_father_brother', title: 'Father → brother → wife',     enabled: true,  example_count: 2103 },
-      { id: 'm2_uncle_in_law',   title: 'Uncle-in-law triangle',       enabled: true,  example_count:  894 },
-      { id: 'm3_same_household', title: 'Pre-marriage co-residence',   enabled: false, example_count: 1456 },
-      { id: 'm4_banner_endog',   title: 'Banner endogamy chain',       enabled: true,  example_count:  327 },
-    ],
+  if (_ruleCache) return _ruleCache
+  try {
+    const r = await http.get('/rules')
+    _ruleCache = _normalize(r.data)
+  } catch {
+    _ruleCache = _normalize({ macro: {}, motifs: {} })
   }
+  return _ruleCache
+}
+
+/** Push macro / motif updates. Accepts {macro: {id: weight}, motifs: {id: bool}}. */
+export async function postRules(body) {
+  try {
+    const r = await http.post('/rules', body)
+    _ruleCache = _normalize(r.data)
+  } catch {
+    // Local-only update — apply to cached state so SHAP/agents pick it up.
+    const cur = await getRules()
+    if (body.macro) {
+      for (const r of cur.macro) {
+        if (body.macro[r.id] != null) r.weight = body.macro[r.id]
+      }
+    }
+    if (body.motifs) {
+      for (const m of cur.motifs) {
+        if (body.motifs[m.id] != null) m.enabled = body.motifs[m.id]
+      }
+    }
+    _ruleCache = _normalize(cur)
+  }
+  return _ruleCache
 }

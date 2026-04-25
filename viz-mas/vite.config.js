@@ -11,9 +11,10 @@ export default defineConfig({
     port: 5190,
     strictPort: true,
     proxy: {
-      // Backend stub at 127.0.0.1:8001 (FastAPI for live HGT inference,
-      // not yet implemented). Until it's running, the api/client.js falls
-      // back to fetching ./data/cohort_<year>.json directly.
+      // FastAPI backend at 127.0.0.1:8001 (server/main.py). HTTP + WebSocket.
+      // If the backend isn't running, viz-mas/src/api/client.js falls back
+      // to fetching ./data/cohort_<year>__<ablation>.json directly and
+      // simulates the agent stream client-side.
       '/api': { target: 'http://127.0.0.1:8001', ws: true, changeOrigin: true },
     },
   },
