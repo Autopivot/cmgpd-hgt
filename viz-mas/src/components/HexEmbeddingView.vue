@@ -3,18 +3,32 @@
     <div class="panel-head">
       <span>V3 · Relation Embedding Space</span>
       <span class="legend-row">
-        <span class="score-legend tiny">
-          <span class="lbl">HGT score</span>
-          <span class="tick">0</span>
-          <span class="ramp"></span>
-          <span class="tick">1</span>
-        </span>
+        <!-- Honeycomb-mode legend uses the diverging score-gap palette
+             from viz/js/honeycomb_render.js (red → cream → green) so the
+             rendered hexes match the canonical viewer exactly. -->
+        <template v-if="mode === 'honeycomb'">
+          <span class="score-legend tiny">
+            <span class="lbl">score gap</span>
+            <span class="tick">−1</span>
+            <span class="ramp gap-ramp"></span>
+            <span class="tick">+1</span>
+          </span>
+        </template>
+        <template v-else>
+          <span class="score-legend tiny">
+            <span class="lbl">HGT score</span>
+            <span class="tick">0</span>
+            <span class="ramp hgt-ramp"></span>
+            <span class="tick">1</span>
+          </span>
+        </template>
       </span>
       <span class="tiny muted">{{ hint }}</span>
       <button class="mode-btn" @click="cycleMode" :title="`mode: ${mode}`">
         {{ modeLabel }}
       </button>
-      <label class="topk-ctl tiny" title="Pairs per husband (1 = best-scoring only; higher exposes hard negatives)">
+      <label class="topk-ctl tiny" v-if="mode === 'scatter'"
+             title="Pairs per husband (1 = best-scoring; higher exposes hard negatives)">
         K
         <select v-model.number="topK" @change="redraw">
           <option :value="1">1</option>
@@ -23,7 +37,7 @@
           <option :value="8">8</option>
         </select>
       </label>
-      <button
+      <button v-if="mode === 'scatter'"
         class="mode-btn lasso-btn"
         :class="{ on: lassoOn }"
         @click="toggleLasso"
@@ -32,7 +46,7 @@
       <button class="fs-btn" @click="bus.emit('full-screen', 'v3')" title="Full screen">⛶</button>
     </div>
     <div class="panel-body no-pad" ref="wrapRef">
-      <svg ref="svgRef" class="hex-svg" @click="deselect" />
+      <svg ref="svgRef" class="hex-svg" @click="onCanvasClick" />
       <div v-if="loading" class="overlay">loading embeddings…</div>
       <div v-if="error" class="overlay err">{{ error }}</div>
     </div>
@@ -46,6 +60,13 @@ import { hexPath } from '../utils/hex.js'
 import { getEmbedding } from '../api/client.js'
 import bus from '../utils/eventbus.js'
 
+// Canonical (verbatim) hex algorithm from D:/projects/VIS_2026/NEW/viz/js/.
+// These two modules implement the iterative inward-attraction packing,
+// the diverging score-gap fill (#993c1d → #f5f1e8 → #0f6e56), the cluster
+// borders, and the outlier stripe overlay. Used only for `mode === 'honeycomb'`.
+import { buildHoneycomb } from '../canonical/cluster_layout.js'
+import { renderHoneycomb } from '../canonical/honeycomb_render.js'
+
 const svgRef = ref(null)
 const wrapRef = ref(null)
 const loading = ref(true)
@@ -53,16 +74,20 @@ const error = ref(null)
 
 const appState = inject('appState')
 
-// 2 modes — preserve the ASight pipeline (MDS + X-means + density contour
-// + cluster hulls) for both, and add a foreground swap.
-//   'hex'     — hexagonal binning of points; each hex shows mean HGT score
-//   'scatter' — plain dots, coloured by HGT score
-const MODES = ['hex', 'scatter']
-const mode = ref('hex')
-const modeLabel = computed(() => mode.value === 'hex' ? '⬢ hex' : '• scatter')
+// 2 modes:
+//   'honeycomb' — verbatim viz/ algorithm. Cluster-packed cells, score-gap
+//                 diverging fill, cluster borders, outlier stripes. Click
+//                 a hex → V4/V5.
+//   'scatter'   — raw MDS dots over X-means + density-contour background;
+//                 supports lasso for multi-point selection.
+const MODES = ['honeycomb', 'scatter']
+const mode = ref('honeycomb')
+const modeLabel = computed(() =>
+  mode.value === 'honeycomb' ? '⬢ honeycomb' : '• scatter'
+)
 const hint = computed(() =>
-  mode.value === 'hex'
-    ? 'X-means + density contour · click a hexagon'
+  mode.value === 'honeycomb'
+    ? 'click a hex; cluster borders mark cluster boundaries'
     : 'X-means + density contour · click a point · drag-lasso for multi-select'
 )
 function cycleMode() {
@@ -70,28 +95,22 @@ function cycleMode() {
   draw()
 }
 
-// Lasso (rectangular brush) for selecting multiple points → V4/V5
 const lassoOn = ref(false)
 function toggleLasso() {
   lassoOn.value = !lassoOn.value
-  // Lasso hit-tests individual points, so force scatter so users can see them.
   if (lassoOn.value) mode.value = 'scatter'
   draw()
 }
 
-// Top-K filter — for each husband, keep only the K highest-scoring pairs.
-// K=1 collapses to "single best candidate per husband" (close to argmax).
 const topK = ref(3)
 
 const STROKE_REST = '#6d6458'
 const STROKE_SELECT = '#d46a3b'
-
-// Cluster palette (paired hues, soft) — same as ASight reference.
 const clusterPalette = d3.schemeSet2
 
-let data = null              // { mds_coords, clusters, pairs, ... }
+let data = null
 let selected = ref(null)
-const acceptedSet = ref(new Set())   // "husband|wife" of accepted matches → removed
+const acceptedSet = ref(new Set())
 
 function resizeHandler() { draw() }
 
@@ -112,12 +131,213 @@ async function load() {
 function redraw() { draw() }
 
 // ──────────────────────────────────────────────────────────────────────
-// Tiny K-means / X-means (client-side on 2-D embedded points). The cohort
-// JSON also carries pre-computed cluster IDs (k=8–10 from server-side
-// X-means), but the on-screen view is filtered (top-K, accepted-set), so
-// we re-cluster the visible subset to keep hull labels honest.
+// Mode dispatch
 // ──────────────────────────────────────────────────────────────────────
+function draw() {
+  if (!svgRef.value || !wrapRef.value || !data) return
+  const wrap = wrapRef.value.getBoundingClientRect()
+  const W = wrap.width, H = wrap.height
+  if (W === 0 || H === 0) return
+  const svg = svgRef.value
+  // Clear and reset basic attrs; the canonical renderer will rewrite for
+  // honeycomb mode, the d3 path below for scatter mode.
+  while (svg.firstChild) svg.removeChild(svg.firstChild)
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`)
+  if (mode.value === 'honeycomb') drawHoneycomb(W, H)
+  else drawScatter(W, H)
+}
 
+// ──────────────────────────────────────────────────────────────────────
+// Honeycomb mode — wraps the canonical algorithm
+// ──────────────────────────────────────────────────────────────────────
+function drawHoneycomb(W, H) {
+  const svg = svgRef.value
+  // The canonical renderer wants the full cohort JSON shape.
+  // Build a layout once per (year, ablation) — algorithm has no top-K.
+  const cohortLike = {
+    pairs: data.pairs,
+    mds_coords: data.mds_coords,
+    clusters: data.clusters,
+    k_clusters: data.k_clusters,
+  }
+  const layout = buildHoneycomb(cohortLike)
+  const opts = { width: W, height: H, marginPx: 40 }
+  renderHoneycomb(svg, layout, opts)
+  // Listeners are attached once in onMounted (see below) — re-binding here
+  // would leak handlers on every draw and fire bus events 2×, 3×, … per
+  // click as the user pans through cohorts.
+}
+
+function onCanonicalCellClick(ev) {
+  // Only respond when honeycomb mode is active and we have data.
+  if (mode.value !== 'honeycomb' || !data) return
+  const cell = ev.detail || {}
+  const pairIds = cell.pairIds || []
+  const pairs = pairIds.map(i => pairPayload(data.pairs[i], i)).filter(Boolean)
+  if (!pairs.length) {
+    // Empty cell click — clear selection downstream
+    bus.emit('hex-clear')
+    selected.value = null
+    return
+  }
+  bus.emit('hex-select', { binKey: `cell:${cell.id}`, pairs })
+  selected.value = { kind: 'cell', id: cell.id }
+}
+function onCanonicalCellHover(_ev) {
+  // Hover not yet wired into linked highlights.
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Scatter mode — preserves the ASight pipeline + lasso
+// ──────────────────────────────────────────────────────────────────────
+function shapeActivePoints() {
+  if (!data || !data.pairs?.length) return []
+  const xs = data.mds_coords.map(c => c[0])
+  const ys = data.mds_coords.map(c => c[1])
+  const xMin = d3.min(xs), xMax = d3.max(xs)
+  const yMin = d3.min(ys), yMax = d3.max(ys)
+  const xSpan = (xMax - xMin) || 1
+  const ySpan = (yMax - yMin) || 1
+  const pts = data.pairs.map((p, i) => {
+    const [mx, my] = data.mds_coords[i] || [0, 0]
+    return {
+      id: p.id,
+      x: (mx - xMin) / xSpan,
+      y: (my - yMin) / ySpan,
+      score: 1 / (1 + Math.exp(-p.score)),
+      raw_score: p.score,
+      score_gap: p.score_gap,
+      pair_type: p.label === 1 ? 'gt' : 'pred',
+      label: p.label,
+      hungarian_correct: p.hungarian_correct,
+      male_idx: p.husband_id,
+      female_idx: p.wife_id,
+      same_lineage: p.same_lineage,
+      era: p.era,
+      patri_path_count: p.patri_path_count,
+      cluster: data.clusters?.[i],
+    }
+  })
+  const filtered = pts.filter(p => !acceptedSet.value.has(`${p.male_idx}|${p.female_idx}`))
+  if (topK.value >= filtered.length) return filtered
+  const byMale = new Map()
+  for (const p of filtered) {
+    if (!byMale.has(p.male_idx)) byMale.set(p.male_idx, [])
+    byMale.get(p.male_idx).push(p)
+  }
+  const out = []
+  for (const arr of byMale.values()) {
+    arr.sort((a, b) => b.raw_score - a.raw_score)
+    out.push(...arr.slice(0, topK.value))
+  }
+  return out
+}
+
+function drawScatter(W, H) {
+  const pad = 14
+  const innerW = W - pad * 2
+  const innerH = H - pad * 2
+  const x = d3.scaleLinear().domain([0, 1]).range([0, innerW])
+  const y = d3.scaleLinear().domain([0, 1]).range([innerH, 0])
+  const svg = d3.select(svgRef.value)
+  const root = svg.append('g').attr('transform', `translate(${pad},${pad})`)
+  const activePoints = shapeActivePoints()
+
+  const fillScale = d3.scaleSequential(
+    d3.interpolateRgbBasis(['#fff7d6','#f5c04e','#e07b3a','#9d2466','#2a1a6b'])
+  ).domain([0, 1])
+
+  // Density contour
+  const screenPts = activePoints.map(p => [x(p.x), y(p.y)])
+  if (screenPts.length > 0) {
+    const contours = d3.contourDensity()
+      .x(d => d[0]).y(d => d[1])
+      .size([innerW, innerH])
+      .bandwidth(22).thresholds(10)(screenPts)
+    const cScale = d3.scaleSequential(d3.interpolate('#f3ecdf', '#3a3d42'))
+      .domain([0, d3.max(contours, c => c.value) || 1])
+    root.append('g').attr('class', 'contour')
+      .selectAll('path').data(contours).enter().append('path')
+      .attr('d', d3.geoPath())
+      .attr('fill', d => cScale(d.value)).attr('fill-opacity', 0.55)
+      .attr('stroke', '#8b8378').attr('stroke-width', 0.35)
+  }
+
+  // X-means hulls
+  if (screenPts.length >= 4) {
+    const best = pickKByBic(screenPts, 2,
+      Math.min(8, Math.max(2, Math.floor(screenPts.length / 30))))
+    if (best) {
+      const hulls = clusterHulls(screenPts, best.labels, best.k)
+      const hullG = root.append('g').attr('class', 'hulls')
+      hullG.selectAll('path').data(hulls).enter().append('path')
+        .attr('d', d => `M${d.hull.map(p => p.join(',')).join('L')}Z`)
+        .attr('fill', d => clusterPalette[d.c % clusterPalette.length])
+        .attr('fill-opacity', 0.18)
+        .attr('stroke', d => clusterPalette[d.c % clusterPalette.length])
+        .attr('stroke-width', 1.4)
+        .attr('stroke-dasharray', '3 2')
+      hullG.selectAll('text').data(hulls).enter().append('text')
+        .attr('x', d => d3.polygonCentroid(d.hull)[0])
+        .attr('y', d => d3.polygonCentroid(d.hull)[1])
+        .attr('text-anchor', 'middle')
+        .attr('font-size', 11).attr('font-weight', 700)
+        .attr('fill', d => d3.color(clusterPalette[d.c % clusterPalette.length]).darker(1.2))
+        .text(d => `k${d.c + 1}`)
+    }
+  }
+
+  // Scatter dots
+  const g = root.append('g').attr('class', 'scatter')
+  g.selectAll('circle').data(activePoints).enter().append('circle')
+    .attr('cx', p => x(p.x)).attr('cy', p => y(p.y))
+    .attr('r', p => p.pair_type === 'pred' ? 2.6 : 3.4)
+    .attr('fill', p => fillScale(p.score))
+    .attr('stroke', STROKE_REST)
+    .attr('stroke-width', p => p.pair_type === 'pred' ? 0.3 : 0.5)
+    .attr('stroke-dasharray', p => p.pair_type === 'pred' ? '1.5 1.5' : null)
+    .attr('fill-opacity', p => p.pair_type === 'pred' ? 0.75 : 1.0)
+    .style('cursor', 'pointer')
+    .on('click', (event, p) => {
+      event.stopPropagation()
+      g.selectAll('circle')
+        .attr('stroke', STROKE_REST)
+        .attr('stroke-width', d => d.pair_type === 'pred' ? 0.3 : 0.5)
+      d3.select(event.currentTarget).attr('stroke', STROKE_SELECT).attr('stroke-width', 2.0)
+      bus.emit('hex-select', {
+        binKey: `pt:${p.male_idx}-${p.female_idx}`,
+        pairs: [pairPayload(data.pairs[p.id], p.id)],
+      })
+    })
+
+  if (lassoOn.value) attachLasso(root, innerW, innerH, activePoints, x, y)
+}
+
+function attachLasso(root, innerW, innerH, activePoints, x, y) {
+  const brush = d3.brush()
+    .extent([[0, 0], [innerW, innerH]])
+    .on('end', (event) => {
+      if (!event.selection) return
+      const [[x0, y0], [x1, y1]] = event.selection
+      const picked = activePoints.filter(p => {
+        const sx = x(p.x), sy = y(p.y)
+        return sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1
+      })
+      if (!picked.length) return
+      bus.emit('hex-select', {
+        binKey: `lasso:${picked.length}`,
+        pairs: picked.map(p => pairPayload(data.pairs[p.id], p.id)),
+      })
+    })
+  const lg = root.append('g').attr('class', 'lasso')
+  lg.call(brush)
+  lg.selectAll('.overlay').attr('fill-opacity', 0)
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// X-means utilities (used in scatter mode only — honeycomb mode uses
+// the cluster ids that `cluster_layout.js` reads from cohort.clusters).
+// ──────────────────────────────────────────────────────────────────────
 function kmeansPP(pts, k, rng = Math.random) {
   const n = pts.length
   if (n === 0) return { centers: [], labels: [] }
@@ -139,7 +359,6 @@ function kmeansPP(pts, k, rng = Math.random) {
   }
   return runKmeans(pts, centers)
 }
-
 function runKmeans(pts, centers, maxIter = 40) {
   const n = pts.length, k = centers.length
   const labels = new Array(n).fill(0)
@@ -169,7 +388,6 @@ function runKmeans(pts, centers, maxIter = 40) {
   }
   return { centers, labels }
 }
-
 function wss(pts, labels, centers) {
   let s = 0
   for (let i = 0; i < pts.length; i++) {
@@ -179,8 +397,6 @@ function wss(pts, labels, centers) {
   }
   return s
 }
-
-// BIC-driven K choice (X-means)
 function pickKByBic(pts, kMin = 2, kMax = 8) {
   let best = null
   const n = pts.length
@@ -196,7 +412,6 @@ function pickKByBic(pts, kMin = 2, kMax = 8) {
   }
   return best
 }
-
 function clusterHulls(pts, labels, k) {
   const hulls = []
   for (let c = 0; c < k; c++) {
@@ -209,272 +424,42 @@ function clusterHulls(pts, labels, k) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Data shaping: pull (x, y, sigmoid(score), pair_type) per pair, optionally
-// keep only top-K per husband, and normalize MDS coords to [0, 1].
+// Shared helpers
 // ──────────────────────────────────────────────────────────────────────
-
-function shapeActivePoints(d) {
-  if (!d || !d.pairs?.length) return []
-  // Compute MDS bounds for [0, 1] normalization (raw MDS isn't normalized).
-  const xs = d.mds_coords.map(c => c[0])
-  const ys = d.mds_coords.map(c => c[1])
-  const xMin = d3.min(xs), xMax = d3.max(xs)
-  const yMin = d3.min(ys), yMax = d3.max(ys)
-  const xSpan = (xMax - xMin) || 1
-  const ySpan = (yMax - yMin) || 1
-
-  const pts = d.pairs.map((p, i) => {
-    const [mx, my] = d.mds_coords[i] || [0, 0]
-    return {
-      id: p.id,
-      x: (mx - xMin) / xSpan,
-      y: (my - yMin) / ySpan,
-      // Cohort score is a logit; squash through sigmoid for [0,1] color.
-      score: 1 / (1 + Math.exp(-p.score)),
-      raw_score: p.score,
-      score_gap: p.score_gap,
-      pair_type: p.label === 1 ? 'gt' : 'pred',
-      label: p.label,
-      hungarian_correct: p.hungarian_correct,
-      male_idx: p.husband_id,
-      female_idx: p.wife_id,
-      lineage_husband: p.lineage_husband,
-      lineage_wife: p.lineage_wife,
-      same_lineage: p.same_lineage,
-      era: p.era,
-      patri_path_count: p.patri_path_count,
-      cluster: d.clusters?.[i],
-    }
-  })
-
-  // Filter accepted-elsewhere matches.
-  const filtered = pts.filter(p =>
-    !acceptedSet.value.has(`${p.male_idx}|${p.female_idx}`)
-  )
-
-  // Top-K per husband (by score). K=1 = best-scoring pair only.
-  if (topK.value >= filtered.length) return filtered
-  const byMale = new Map()
-  for (const p of filtered) {
-    if (!byMale.has(p.male_idx)) byMale.set(p.male_idx, [])
-    byMale.get(p.male_idx).push(p)
-  }
-  const out = []
-  for (const arr of byMale.values()) {
-    arr.sort((a, b) => b.raw_score - a.raw_score)
-    out.push(...arr.slice(0, topK.value))
-  }
-  return out
-}
-
-// ──────────────────────────────────────────────────────────────────────
-// Draw — preserves the ASight pipeline order:
-//   1. density contour (background)
-//   2. X-means + cluster hulls
-//   3. foreground (hex glyphs OR scatter dots)
-//   4. lasso overlay (when toggled)
-// ──────────────────────────────────────────────────────────────────────
-
-function draw() {
-  if (!svgRef.value || !data) return
-  const wrap = wrapRef.value.getBoundingClientRect()
-  const W = wrap.width, H = wrap.height
-  if (W === 0 || H === 0) return
-  const svg = d3.select(svgRef.value).attr('viewBox', `0 0 ${W} ${H}`)
-  svg.selectAll('*').remove()
-
-  const pad = 14
-  const innerW = W - pad * 2
-  const innerH = H - pad * 2
-  const x = d3.scaleLinear().domain([0, 1]).range([0, innerW])
-  const y = d3.scaleLinear().domain([0, 1]).range([innerH, 0])
-  const root = svg.append('g').attr('transform', `translate(${pad},${pad})`)
-
-  const activePoints = shapeActivePoints(data)
-
-  // ASight HGT-score ramp: cream → gold → orange → magenta → indigo.
-  const fillScale = d3.scaleSequential(
-    d3.interpolateRgbBasis([
-      '#fff7d6', '#f5c04e', '#e07b3a', '#9d2466', '#2a1a6b',
-    ])
-  ).domain([0, 1])
-
-  // ── 1. Background: density contour (ASight pipeline) ────────────────
-  const screenPts = activePoints.map(p => [x(p.x), y(p.y)])
-  if (screenPts.length > 0) {
-    const contours = d3.contourDensity()
-      .x(d => d[0]).y(d => d[1])
-      .size([innerW, innerH])
-      .bandwidth(22)
-      .thresholds(10)(screenPts)
-    const cScale = d3.scaleSequential(
-      d3.interpolate('#f3ecdf', '#3a3d42')
-    ).domain([0, d3.max(contours, c => c.value) || 1])
-    root.append('g').attr('class', 'contour')
-      .selectAll('path').data(contours).enter().append('path')
-      .attr('d', d3.geoPath())
-      .attr('fill', d => cScale(d.value))
-      .attr('fill-opacity', 0.55)
-      .attr('stroke', '#8b8378').attr('stroke-width', 0.35)
-  }
-
-  // ── 2. X-means clustering + convex hulls ────────────────────────────
-  if (screenPts.length >= 4) {
-    const best = pickKByBic(
-      screenPts, 2, Math.min(8, Math.max(2, Math.floor(screenPts.length / 30)))
-    )
-    if (best) {
-      const hulls = clusterHulls(screenPts, best.labels, best.k)
-      const hullG = root.append('g').attr('class', 'hulls')
-      hullG.selectAll('path').data(hulls).enter().append('path')
-        .attr('d', d => `M${d.hull.map(p => p.join(',')).join('L')}Z`)
-        .attr('fill', d => clusterPalette[d.c % clusterPalette.length])
-        .attr('fill-opacity', 0.18)
-        .attr('stroke', d => clusterPalette[d.c % clusterPalette.length])
-        .attr('stroke-width', 1.4)
-        .attr('stroke-dasharray', '3 2')
-      hullG.selectAll('text').data(hulls).enter().append('text')
-        .attr('x', d => d3.polygonCentroid(d.hull)[0])
-        .attr('y', d => d3.polygonCentroid(d.hull)[1])
-        .attr('text-anchor', 'middle')
-        .attr('font-size', 11).attr('font-weight', 700)
-        .attr('fill', d => d3.color(clusterPalette[d.c % clusterPalette.length]).darker(1.2))
-        .text(d => `k${d.c + 1}`)
-    }
-  }
-
-  // ── 3. Foreground: scatter OR hex ───────────────────────────────────
-  if (mode.value === 'scatter') {
-    const g = root.append('g').attr('class', 'scatter')
-    g.selectAll('circle').data(activePoints).enter().append('circle')
-      .attr('cx', p => x(p.x)).attr('cy', p => y(p.y))
-      .attr('r', p => p.pair_type === 'pred' ? 2.6 : 3.4)
-      .attr('fill', p => fillScale(p.score))
-      .attr('stroke', STROKE_REST)
-      .attr('stroke-width', p => p.pair_type === 'pred' ? 0.3 : 0.5)
-      .attr('stroke-dasharray', p => p.pair_type === 'pred' ? '1.5 1.5' : null)
-      .attr('fill-opacity', p => p.pair_type === 'pred' ? 0.75 : 1.0)
-      .style('cursor', 'pointer')
-      .on('click', (event, p) => {
-        event.stopPropagation()
-        g.selectAll('circle')
-          .attr('stroke', STROKE_REST)
-          .attr('stroke-width', d => d.pair_type === 'pred' ? 0.3 : 0.5)
-        d3.select(event.currentTarget).attr('stroke', STROKE_SELECT).attr('stroke-width', 2.0)
-        emitPoint(p)
-      })
-    attachLasso(root, innerW, innerH, activePoints, x, y)
-    return
-  }
-
-  // ── Hex mode ────────────────────────────────────────────────────────
-  // Bin activePoints into a hexagonal lattice; one glyph per bin coloured
-  // by the mean HGT score in that bin.
-  const R = 8
-  const dx = R * Math.sqrt(3)
-  const dy = R * 1.5
-  const bins = new Map()
-  for (const p of activePoints) {
-    const cx = x(p.x), cy = y(p.y)
-    const row = Math.round(cy / dy)
-    const col = Math.round((cx - (row % 2) * dx / 2) / dx)
-    const key = `${row}|${col}`
-    const bcx = col * dx + (row % 2) * dx / 2
-    const bcy = row * dy
-    if (!bins.has(key)) bins.set(key, { key, cx: bcx, cy: bcy, pts: [] })
-    bins.get(key).pts.push(p)
-  }
-
-  const hexG = root.append('g').attr('class', 'hexes')
-  const hex = hexG.selectAll('g.bin').data(Array.from(bins.values()), d => d.key)
-    .enter().append('g')
-    .attr('class', 'bin')
-    .attr('transform', d => `translate(${d.cx},${d.cy})`)
-    .style('cursor', 'pointer')
-    .on('click', (event, d) => { event.stopPropagation(); selectBin(d, hexG) })
-
-  const meanScore = d => d3.mean(d.pts, p => p.score) ?? 0
-
-  hex.append('path')
-    .attr('d', hexPath(0, 0, R))
-    .attr('fill', d => fillScale(meanScore(d)))
-    .attr('fill-opacity', 0.95)
-    .attr('stroke', STROKE_REST)
-    .attr('stroke-width', 0.4)
-    .attr('stroke-linejoin', 'round')
-
-  attachLasso(root, innerW, innerH, activePoints, x, y)
-}
-
-function attachLasso(root, innerW, innerH, activePoints, x, y) {
-  if (!lassoOn.value) return
-  const brush = d3.brush()
-    .extent([[0, 0], [innerW, innerH]])
-    .on('end', (event) => {
-      if (!event.selection) return
-      const [[x0, y0], [x1, y1]] = event.selection
-      const picked = activePoints.filter(p => {
-        const sx = x(p.x), sy = y(p.y)
-        return sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1
-      })
-      if (!picked.length) return
-      bus.emit('hex-select', {
-        binKey: `lasso:${picked.length}`,
-        pairs: picked.map(pairPayload),
-      })
-    })
-  const g = root.append('g').attr('class', 'lasso')
-  g.call(brush)
-  g.selectAll('.overlay').attr('fill-opacity', 0)
-}
-
-function pairPayload(p) {
+function pairPayload(p, idx) {
+  if (!p) return null
   return {
-    id: p.id,
-    husband_id: p.male_idx,
-    wife_id: p.female_idx,
-    score: p.raw_score,
+    id: p.id ?? idx,
+    husband_id: p.husband_id,
+    wife_id: p.wife_id,
+    score: p.score,
     score_gap: p.score_gap,
     label: p.label,
     hungarian_correct: p.hungarian_correct,
     same_lineage: p.same_lineage,
     era: p.era,
-    pair_type: p.pair_type,
-    cluster: p.cluster,
+    pair_type: p.label === 1 ? 'gt' : 'pred',
+    cluster: data?.clusters?.[idx],
     patri_path_count: p.patri_path_count,
   }
 }
 
-function emitPoint(p) {
-  bus.emit('hex-select', {
-    binKey: `pt:${p.male_idx}-${p.female_idx}`,
-    pairs: [pairPayload(p)],
-  })
+function onCanvasClick(event) {
+  // Background-click → clear selection. Cell clicks bubble up to here
+  // too (the canonical renderer doesn't stopPropagation), so we have to
+  // distinguish between the SVG itself and a child element. Treat any
+  // click whose target is a child polygon/path/g as a "real" cell hit
+  // and leave the selection alone.
+  const t = event && event.target
+  if (t && t !== svgRef.value) return
+  if (selected.value) {
+    selected.value = null
+    bus.emit('hex-clear')
+  }
 }
 
-function selectBin(d, hexG) {
-  selected.value = { key: d.key, pts: d.pts }
-  hexG.selectAll('g.bin path').attr('stroke-width', 0.4).attr('stroke', STROKE_REST)
-  hexG.selectAll('g.bin').filter(b => b.key === d.key)
-    .select('path').attr('stroke', STROKE_SELECT).attr('stroke-width', 2.0)
-  bus.emit('hex-select', {
-    binKey: d.key,
-    pairs: d.pts.map(pairPayload),
-  })
-}
-
-function deselect() {
-  if (!selected.value) return
-  selected.value = null
-  d3.select(svgRef.value).selectAll('g.bin path')
-    .attr('stroke', STROKE_REST).attr('stroke-width', 0.4)
-  bus.emit('hex-clear')
-}
-
-// React to cohort change from App.vue (year/ablation toggle) by reloading.
 watch(() => `${appState.year}|${appState.ablation}`, () => { load() })
 
-// When a match is accepted/committed elsewhere, drop those pairs from V3.
 function onAccepted(evt) {
   if (!evt || evt.husband_id == null || evt.wife_id == null) return
   acceptedSet.value.add(`${evt.husband_id}|${evt.wife_id}`)
@@ -485,10 +470,21 @@ onMounted(() => {
   load()
   window.addEventListener('resize', resizeHandler)
   bus.on('match-accepted', onAccepted)
+  // Attach the canonical cell-click / cell-hover listeners on the SVG
+  // ONCE. drawHoneycomb wipes child elements but never replaces svgRef
+  // itself, so a single bind here survives every redraw.
+  if (svgRef.value) {
+    svgRef.value.addEventListener('cell-clicked', onCanonicalCellClick)
+    svgRef.value.addEventListener('cell-hovered', onCanonicalCellHover)
+  }
 })
 onUnmounted(() => {
   window.removeEventListener('resize', resizeHandler)
   bus.off('match-accepted', onAccepted)
+  if (svgRef.value) {
+    svgRef.value.removeEventListener('cell-clicked', onCanonicalCellClick)
+    svgRef.value.removeEventListener('cell-hovered', onCanonicalCellHover)
+  }
 })
 </script>
 
@@ -518,6 +514,11 @@ onUnmounted(() => {
     .ramp {
       display: inline-block; width: 72px; height: 8px; border-radius: 2px;
       border: 1px solid #c8bfa8;
+    }
+    .ramp.gap-ramp {
+      background: linear-gradient(to right, #993c1d 0%, #f5f1e8 50%, #0f6e56 100%);
+    }
+    .ramp.hgt-ramp {
       background: linear-gradient(to right,
         #fff7d6 0%, #f5c04e 25%, #e07b3a 50%, #9d2466 75%, #2a1a6b 100%);
     }

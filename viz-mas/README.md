@@ -12,7 +12,7 @@ algorithms ported from the reference at
 |------|-----------|------|
 | V1   | `OverviewView`              | Per-cohort completion metrics (recall@1, top-10, MRR) — line chart + table |
 | V2   | `ProcessedRelationsTable`   | Sorted list of matched (husband ↔ wife) pairs in the active cohort |
-| V3   | **`HexEmbeddingView`**      | **Embedding space — ASight pipeline**: density contour + X-means convex hulls + (hex / scatter) foreground + lasso |
+| V3   | **`HexEmbeddingView`**      | **Embedding space.** Default mode (`⬢ honeycomb`) wraps the canonical algorithm verbatim from `viz/js/cluster_layout.js` + `viz/js/honeycomb_render.js` (iterative inward-attraction packing, score-gap diverging fill, cluster borders, outlier stripes). Alternate mode (`• scatter`) keeps the ASight pipeline (density contour + X-means + lasso) for multi-point selection. |
 | V4   | `BipartiteDetailView`       | Bipartite husband ↔ wife graph for the V3-selected pairs |
 | V5   | `AgentBattleView`           | MAS negotiation arena (currently a stub running 3 hand-rolled rule-agents per pair) |
 | V6   | `RulerInjectorView`         | Macro feature weights + micro motif toggles (local-only sliders) |
@@ -25,10 +25,22 @@ algorithms ported from the reference at
 - HGT score color ramp: cream → gold → orange → magenta → indigo. Cluster palette `d3.schemeSet2`.
 - Top-K filter: keep only the K best-scoring pairs per husband (1, 3, 5, 8). K=1 collapses to argmax.
 
-## Data source
+## Data source — single-canonical
 
-- Static fallback (current default): fetches `./data/cohort_<year>__<ablation>.json`. The 12 JSONs are precomputed by `viz/data/precompute.py` against the trained checkpoints. Real `score`, `score_gap`, `hungarian_correct`, `mds_coords`, `clusters`, `lineage_*`, and `patri_path_count` per pair.
-- Live backend (planned, not yet implemented): FastAPI at `127.0.0.1:8001` exposing `/api/match`, `/api/embedding`, `/api/negotiate/{id}/stream`, etc.
+`D:/projects/VIS_2026/NEW/viz/data/` is the **only** location where cohort
+JSONs live. There are no copies under `viz-mas/public/data/` anymore.
+
+Two consumers, both pointing at the same files:
+
+- **Frontend**: `vite.config.js` registers a `serveCanonicalData()` plugin
+  that intercepts `/data/*` requests during `vite dev` and pipes the file
+  out of `../viz/data/`.
+- **Backend**: `server/main.py` reads the same directory via
+  `CANONICAL_DATA_DIR = ROOT.parent / "viz" / "data"`.
+
+Update those JSONs by re-running `python viz/data/precompute.py` against
+new model checkpoints — both the frontend and backend pick up the change
+on the next request, no copy step needed.
 
 ## Run
 

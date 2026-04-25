@@ -45,8 +45,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT / "public" / "data"           # primary
-FALLBACK_DATA_DIR = ROOT.parent / "viz" / "data"   # secondary if public/data is empty
+# Single canonical data source: D:/projects/VIS_2026/NEW/viz/data/. Both
+# the frontend (via vite middleware) and the backend read from this
+# directory; no duplicates under viz-mas/public/data anymore.
+CANONICAL_DATA_DIR = ROOT.parent / "viz" / "data"
 
 app = FastAPI(title="cmgpd-mas-backend", version="0.1.0")
 app.add_middleware(
@@ -63,13 +65,10 @@ _cohort_cache: dict[tuple[int, str], dict] = {}
 def _cohort_path(year: int, ablation: str) -> Path:
     suffix = "__unablated" if ablation == "unablated" else ""
     name = f"cohort_{year}{suffix}.json"
-    p = DATA_DIR / name
+    p = CANONICAL_DATA_DIR / name
     if p.exists():
         return p
-    p2 = FALLBACK_DATA_DIR / name
-    if p2.exists():
-        return p2
-    raise HTTPException(404, f"cohort {year} ({ablation}) not found")
+    raise HTTPException(404, f"cohort {year} ({ablation}) not found at {CANONICAL_DATA_DIR}")
 
 
 def load_cohort(year: int, ablation: str = "ablated") -> dict:
