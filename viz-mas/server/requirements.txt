@@ -1,0 +1,12 @@
+fastapi>=0.110,<0.115
+uvicorn[standard]>=0.30,<0.32
+pydantic>=2.5,<3
+# OpenAI Python SDK — used to call DashScope's OpenAI-compatible /v1/chat
+# endpoint for Qwen models (qwen-plus, qwen-plus-2025-04-28, etc.). The
+# StubAgent fallback in mas/agent.py runs without this dep but we ship it
+# so per-person LLM negotiation works out of the box once the user
+# supplies a DASHSCOPE_API_KEY (env var or via /api/llm_config).
+openai>=1.40
+# Cleaned-parquet read for person profiles (pandas + pyarrow).
+pandas>=2.2
+pyarrow>=16

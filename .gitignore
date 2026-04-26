@@ -39,3 +39,7 @@ Thumbs.db
 # ── Local environment hints ────────────────────────────────────────────
 .env
 .envrc
+
+# ── Claude Code runtime state and archives ─────────────────────────────
+.claude/
+*.zip

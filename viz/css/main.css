@@ -1,0 +1,250 @@
+/* HGT marriage-edge cohort viewer
+ * Owner: Subagent D (integrator).
+ * Fixed palette and layout primitives only — module-specific styles live with
+ * each render module's own injected classes.
+ */
+
+:root {
+  --cell-low:    #993c1d;
+  --cell-mid:    #f5f1e8;
+  --cell-high:   #0f6e56;
+  --ch-conf:     #1d9e75;
+  --ch-patri:    #ba7517;
+  --ch-endog:    #7f77dd;
+  --bg:          #ffffff;
+  --border:      #888780;
+  --grid-empty:  #f0efe9;
+  --text:        #1c1b18;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+body {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    "header header"
+    "main   aside";
+  min-height: 100vh;
+}
+
+header {
+  grid-area: header;
+  border-bottom: 1px solid var(--border);
+  padding: 12px 20px;
+}
+
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.status {
+  font-size: 12px;
+  color: var(--text);
+  opacity: 0.75;
+  margin-top: 6px;
+}
+
+.status.error { color: var(--cell-low); opacity: 1; }
+
+#ablation-toggle {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 4px;
+  font: inherit;
+  cursor: pointer;
+}
+
+#ablation-toggle[aria-pressed="true"] {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.year-selector {
+  display: flex;
+  gap: 6px;
+}
+
+.year-selector .year-tab {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 4px;
+  font: inherit;
+  cursor: pointer;
+  min-width: 64px;
+}
+
+.year-selector .year-tab.active {
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
+}
+
+main {
+  grid-area: main;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 16px 20px;
+  gap: 16px;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 24px;
+  align-items: flex-end;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 160px;
+}
+
+.control-group label {
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.control-group input[type="range"] {
+  width: 100%;
+}
+
+.control-chips {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.chip-label {
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  display: inline-block;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 4px 10px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chip.active {
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
+}
+
+.canvas {
+  flex: 1 1 auto;
+  min-height: 480px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  position: relative;
+}
+
+#hc-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Filter dimming — applied as a class so toggling is a CSS-only re-render. */
+#hc-svg .cell-dim {
+  opacity: 0.18;
+}
+
+.linked-views {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.lv-block {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  min-width: 0;
+}
+
+.lv-block h2 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 6px 0;
+}
+
+.lv-block svg {
+  display: block;
+  width: 100%;
+  /* Let height follow the viewBox-derived intrinsic aspect-ratio so the
+     SVG's rendered box matches its viewBox exactly — no letterboxing,
+     no horizontal-only stretch. linked_views.js sets viewBox 800x80 for
+     the gap strip and 800x60 for the confusion strip; the static value
+     in index.html matches each, so the initial render is already
+     consistent. */
+  height: auto;
+}
+
+aside#drill-panel {
+  grid-area: aside;
+  width: 360px;
+  border-left: 1px solid var(--border);
+  padding: 16px;
+  overflow-y: auto;
+}
+
+aside#drill-panel h2 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+}
+
+aside#drill-panel .drill-empty {
+  font-size: 12px;
+  opacity: 0.7;
+}
