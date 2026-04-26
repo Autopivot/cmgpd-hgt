@@ -4,6 +4,15 @@
       <span>V5 · Agent Arena · MAS Negotiation</span>
       <span class="actions">
         <span class="tiny muted" v-if="husband">t-{{ husband.id }}</span>
+        <span v-if="currentRound > 0" class="round-chip tiny" :class="{ paused: isPaused }">
+          R{{ currentRound }}/6 · {{ currentRoundLabel }}
+        </span>
+        <button v-if="isPaused && currentRound < 6"
+          class="btn primary"
+          :disabled="advancing"
+          @click="approveAndAdvance">
+          {{ advancing ? '…' : 'Approve & Advance →' }}
+        </button>
         <span v-if="streamState" class="stream-state tiny" :class="streamState">{{ streamState }}</span>
         <button class="btn ghost" :disabled="!husband || running" @click="startBattle">▶ arena</button>
         <button class="fs-btn" @click="bus.emit('full-screen', 'v5')" title="Full screen">⛶</button>
@@ -34,11 +43,53 @@
         </div>
       </div>
 
+      <!-- Husband life-history (DS0003 events + income) -->
+      <div v-if="husband && (husbandNarrative || husbandPersona)" class="row narrative-row">
+        <div class="narrative-head" @click="narrativeOpen = !narrativeOpen">
+          <span class="caret">{{ narrativeOpen ? '▾' : '▸' }}</span>
+          <span class="tiny muted">life history · t-{{ husband.id }}</span>
+          <span v-if="husbandNarrative?.birth_year" class="tiny muted">
+            b{{ husbandNarrative.birth_year }} → {{ appState.year }}
+          </span>
+          <span v-if="husbandNarrative" class="tiny muted">
+            · {{ husbandNarrative.events?.length || 0 }} events · {{ husbandNarrative.income?.length || 0 }} income years
+          </span>
+        </div>
+        <div v-show="narrativeOpen" class="narrative-body">
+          <div v-if="husbandPersona" class="persona-block">
+            <div class="persona-headline">{{ husbandPersona.headline }}</div>
+            <div v-if="husbandPersona.traits?.length" class="chip-row">
+              <span v-for="t in husbandPersona.traits" :key="'t-'+t" class="trait-chip">{{ t }}</span>
+            </div>
+            <div v-if="husbandPersona.values?.length" class="chip-row">
+              <span class="lbl">values:</span>
+              <span v-for="v in husbandPersona.values" :key="'v-'+v" class="value-chip">{{ v }}</span>
+            </div>
+            <div v-if="husbandPersona.red_flags?.length" class="chip-row">
+              <span class="lbl">⚠</span>
+              <span v-for="r in husbandPersona.red_flags" :key="'r-'+r" class="flag-chip">{{ r }}</span>
+            </div>
+          </div>
+          <div v-if="husbandNarrative?.events?.length" class="event-strip">
+            <span v-for="ev in husbandNarrative.events" :key="ev.year + (ev.event_1 || '') + (ev.event_2 || '')"
+              class="event-pill" :title="`${ev.year} · ${[ev.event_1, ev.event_2].filter(Boolean).join(' / ')}`">
+              {{ ev.year }} {{ ev.event_1 || ev.event_2 }}
+            </span>
+          </div>
+          <div v-if="husbandNarrative?.income?.length" class="income-strip">
+            <span class="tiny muted">income:</span>
+            <span v-for="row in husbandNarrative.income" :key="'inc-'+row.year"
+              class="income-pip" :class="'lvl-'+row.level"
+              :title="`${row.year} · ${row.income} (${row.level})`"></span>
+          </div>
+        </div>
+      </div>
+
       <!-- Hint console -->
       <div class="row hint-row">
         <div class="hint-head">
           <span class="tiny muted">
-            hint console · use <code>@c-{wife_id}</code> or <code>@all</code> · verbs:
+            hint console · use <code>@everyone</code>, <code>@target</code>, or <code>@c-{wife_id}</code> · verbs:
             boost / penalise / eliminate / accept
           </span>
         </div>
@@ -86,13 +137,20 @@
       <!-- Final ranking footer -->
       <div v-if="finalRanking" class="row footer-row">
         <div class="tiny muted">
-          final ranking · top {{ Math.min(3, finalRanking.length) }}:
+          final ranking · score = (s + t)/2 − λ·|s − t| · top {{ Math.min(3, finalRanking.length) }}:
         </div>
         <ol class="rank-list tiny">
-          <li v-for="r in finalRanking.slice(0, 3)" :key="r.candidate_id">
+          <li v-for="(r, idx) in finalRanking.slice(0, 3)" :key="r.candidate_id"
+              :class="{ winner: idx === 0 }">
             <span class="chip c">c-{{ r.candidate_id }}</span>
-            <span>final {{ r.final_score?.toFixed(2) }}</span>
-            <span class="muted">(t{{ r.target_score }}/c{{ r.candidate_score ?? '—' }} · pre{{ r.pre_score?.toFixed(2) }})</span>
+            <span class="final-num">final {{ r.final_score?.toFixed(2) }}</span>
+            <span class="muted">
+              = ({{ r.target_score?.toFixed(1) ?? '—' }} + {{ r.candidate_score?.toFixed(1) ?? '—' }})/2
+              − {{ (r.lambda ?? 0.3).toFixed(2) }}·|{{ r.target_score?.toFixed(1) ?? '—' }}−{{ r.candidate_score?.toFixed(1) ?? '—' }}|
+            </span>
+            <button v-if="idx === 0 && !accepted" class="btn primary tiny"
+                    @click="acceptRanked(r)">Accept this match</button>
+            <span v-else-if="idx === 0 && accepted" class="tiny ok">✓ accepted</span>
           </li>
         </ol>
       </div>
@@ -104,6 +162,7 @@
 import { ref, inject, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import {
   startNegotiation, openNegotiationStream, sendNegotiationHint, overrideMatch, getPair,
+  advanceRound, getNarrative,
 } from '../api/client.js'
 import bus from '../utils/eventbus.js'
 import CandidateCard from './CandidateCard.vue'
@@ -121,6 +180,18 @@ const systemLog = ref([])
 const logRef = ref(null)
 const hint = ref('')
 const verbs = ['boost', 'penalise', 'eliminate', 'accept']
+
+// 6-round bilateral negotiation state.
+//   currentRound 0   = pre-arena
+//   currentRound 1-6 = active round
+//   isPaused === true after a `round_paused` frame; cleared when user advances
+const currentRound = ref(0)
+const currentRoundLabel = ref('')
+const isPaused = ref(false)
+const advancing = ref(false)
+const husbandNarrative = ref(null)   // { events, income, birth_year } or null
+const husbandPersona = ref(null)     // { headline, traits, values, red_flags } or null
+const narrativeOpen = ref(true)      // collapsible panel state
 
 let activeWS = null
 
@@ -167,6 +238,18 @@ async function loadHusband(id) {
   finalRanking.value = null
   accepted.value = null
   streamState.value = 'idle'
+  currentRound.value = 0
+  currentRoundLabel.value = ''
+  isPaused.value = false
+  husbandNarrative.value = null
+  husbandPersona.value = null
+  // Pre-fetch the husband's life history for the narrative panel — even
+  // before the arena spins up, the user can preview events + income.
+  const year = appState.year
+  try {
+    const n = await getNarrative(id, year)
+    if (n && (n.events?.length || n.income?.length)) husbandNarrative.value = n
+  } catch (_) { /* offline-safe */ }
 }
 
 // ── Start the negotiation ──────────────────────────────────────────────
@@ -179,6 +262,10 @@ async function startBattle() {
   systemLog.value = []
   streamState.value = 'starting'
   running.value = true
+  currentRound.value = 0
+  currentRoundLabel.value = ''
+  isPaused.value = false
+  husbandPersona.value = null
   logSys(`<b>start</b> negotiate ${husband.value.id} · cohort ${appState.year} · ${appState.ablation}`)
 
   try {
@@ -281,8 +368,72 @@ function handleEvent(e) {
       }
       logSys(`bilateral: ${Object.keys(e.scores).length} candidates returned a score`)
       break
+    // ── 6-round bilateral negotiation frames ──────────────────────────
+    case 'round_start':
+      currentRound.value = e.round
+      currentRoundLabel.value = e.label || ''
+      isPaused.value = false
+      logSys(`<b>round ${e.round}</b> · ${e.label}`)
+      break
+    case 'narrative': {
+      // Husband's narrative goes to the top panel; candidates' narratives
+      // attach to their cards so CandidateCard can expose them on demand.
+      const isHusband = husband.value && (e.person_id === husband.value.id || e.person_id === `P${husband.value.id}`)
+      if (isHusband) husbandNarrative.value = { events: e.events || [], income: e.income || [], birth_year: e.birth_year ?? null }
+      else {
+        const a = agents.value.find(a => a.id === e.person_id || `c-${a.id}` === e.person_id)
+        if (a) a.narrative = { events: e.events || [], income: e.income || [], birth_year: e.birth_year ?? null }
+      }
+      break
+    }
+    case 'persona': {
+      const isHusband = husband.value && (e.person_id === husband.value.id || e.person_id === `P${husband.value.id}`)
+      if (isHusband) husbandPersona.value = e.resume
+      else {
+        const a = agents.value.find(a => a.id === e.person_id || `c-${a.id}` === e.person_id)
+        if (a) a.persona = e.resume
+      }
+      break
+    }
+    case 'query':
+    case 'answer': {
+      // Route to whichever candidate is on the non-target side of this exchange.
+      const cid = e.from === 'target' ? e.to : e.from
+      const candId = String(cid).startsWith('c-') ? String(cid).slice(2) : cid
+      const a = agents.value.find(a => a.id === candId)
+      if (a) {
+        if (!Array.isArray(a.conversation)) a.conversation = []
+        a.conversation.push({ round: currentRound.value, kind: e.type, from: e.from, to: e.to, text: e.text, ts: Date.now() })
+      }
+      break
+    }
+    case 'round_scores':
+      for (const p of e.pairs || []) {
+        const a = agents.value.find(a => a.id === p.candidate_id)
+        if (!a) continue
+        a.target_score = p.target_score
+        a.candidate_score = p.candidate_score
+        a.target_reason = p.target_reason
+        a.candidate_reason = p.candidate_reason
+        if (!a.round_scores) a.round_scores = {}
+        a.round_scores[e.round] = {
+          target_score: p.target_score,
+          candidate_score: p.candidate_score,
+          target_reason: p.target_reason,
+          candidate_reason: p.candidate_reason,
+        }
+      }
+      logSys(`round ${e.round} scores: ${e.pairs?.length ?? 0} candidates`)
+      break
+    case 'round_paused':
+      isPaused.value = true
+      logSys(`round ${e.round} paused — awaiting Approve & Advance`, 'sys')
+      break
     case 'final_ranking':
       finalRanking.value = e.ranking
+      currentRound.value = 6
+      currentRoundLabel.value = 'final'
+      isPaused.value = true   // user must accept manually
       if (e.chosen) {
         accepted.value = { id: e.chosen.candidate_id, score: e.chosen.final_score }
         logSys(`auto-pick → <b>c-${e.chosen.candidate_id}</b> @ ${e.chosen.final_score.toFixed(2)}`, 'ok')
@@ -321,13 +472,31 @@ function parseHint(txt) {
   let m
   while ((m = re.exec(txt))) ids.push(m[1])
   const verb = (txt.match(/\b(boost|penalise|penalize|eliminate|accept)\b/i)?.[1] || '').toLowerCase()
-  return { verb: verb === 'penalize' ? 'penalise' : verb, ids: [...new Set(ids)] }
+  // Server-side role: @everyone/@all → 'all'; @target → 'target';
+  // single @c-XXX → that candidate; multiple → 'all' (server broadcasts).
+  let role = 'all'
+  if (/@target\b/i.test(txt)) role = 'target'
+  else if (ids.length === 1) role = `c-${ids[0]}`
+  return { verb: verb === 'penalize' ? 'penalise' : verb, ids: [...new Set(ids)], role }
+}
+
+async function approveAndAdvance() {
+  if (!husband.value || !isPaused.value || advancing.value) return
+  advancing.value = true
+  try {
+    await advanceRound(husband.value.id)
+    isPaused.value = false
+  } catch (e) {
+    logSys(`advance failed: ${e.message || e}`, 'err')
+  } finally {
+    advancing.value = false
+  }
 }
 
 async function sendHint() {
   const text = hint.value.trim()
   if (!text || !husband.value) return
-  const { verb, ids } = parseHint(text)
+  const { verb, ids, role } = parseHint(text)
   // Local UI effects (mirror the server-side hint).
   for (const id of ids) {
     const a = agents.value.find(a => a.id === id || ('P' + a.id) === id)
@@ -337,10 +506,10 @@ async function sendHint() {
     else if (verb === 'boost' && a.target_score != null) a.target_score = Math.min(10, a.target_score + 0.5)
     else if (verb === 'penalise' && a.target_score != null) a.target_score = Math.max(0, a.target_score - 0.5)
   }
-  try { await sendNegotiationHint(husband.value.id, text, 'all') }
+  try { await sendNegotiationHint(husband.value.id, text, role, currentRound.value) }
   catch (e) { logSys(`hint POST failed: ${e.message || e}`, 'err') }
   hint.value = ''
-  logSys(`<b>hint</b> ${text}`)
+  logSys(`<b>hint</b> [${role}] ${text}`)
 }
 
 function boost(a, delta) {
@@ -367,6 +536,12 @@ async function acceptOne(a) {
       appState.year, appState.ablation,
     )
   } catch (e) { logSys(`override POST failed: ${e.message || e}`, 'err') }
+}
+
+// Accept the top-1 from the round-6 final ranking.
+async function acceptRanked(r) {
+  const a = agents.value.find(a => a.id === r.candidate_id) || { id: r.candidate_id, target_score: r.final_score }
+  await acceptOne(a)
 }
 
 // ── Lifecycle ──────────────────────────────────────────────────────────
@@ -481,4 +656,63 @@ onUnmounted(() => {
 
 code { background: #eee; padding: 0 3px; border-radius: 2px; font-family: "Monaco", monospace; }
 .actions { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; justify-content: flex-end; }
+
+// Round indicator chip in the header.
+.round-chip {
+  background: #d4a85d; color: #1a1a1a;
+  padding: 2px 7px; border-radius: 3px;
+  font-weight: 600; font-variant-numeric: tabular-nums;
+  &.paused { background: #ffd84a; box-shadow: 0 0 0 2px #ffd84a44; }
+}
+.btn.primary {
+  background: #0f6e56; color: #fff; border: 1px solid #0a4a3a;
+  padding: 3px 10px; font-weight: 600; font-size: 11px;
+  border-radius: 3px; cursor: pointer;
+  &:hover:not(:disabled) { background: #0a4a3a; }
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
+}
+.btn.primary.tiny { padding: 1px 7px; font-size: 10px; margin-left: 6px; }
+
+// Husband narrative panel.
+.narrative-row { background: #fbfaf2; }
+.narrative-head {
+  display: flex; align-items: center; gap: 6px;
+  cursor: pointer; user-select: none;
+  &:hover { color: #0a4a3a; }
+  .caret { color: #888; font-size: 10px; width: 10px; }
+}
+.narrative-body { margin-top: 4px; display: flex; flex-direction: column; gap: 4px; }
+.persona-block {
+  padding: 4px 6px; background: #fff; border: 1px solid #e0d8c0; border-radius: 3px;
+  .persona-headline { font-weight: 600; font-size: 11px; margin-bottom: 3px; }
+}
+.chip-row { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; margin-top: 2px;
+  .lbl { font-size: 9px; color: #888; margin-right: 2px; }
+}
+.trait-chip, .value-chip, .flag-chip {
+  font-size: 9px; padding: 1px 5px; border-radius: 8px;
+}
+.trait-chip { background: #e8efe8; color: #2a4a3a; }
+.value-chip { background: #f0e8d8; color: #5a4a2a; }
+.flag-chip  { background: #f5d8d0; color: #8a3a1a; }
+.event-strip {
+  display: flex; flex-wrap: wrap; gap: 3px;
+  max-height: 60px; overflow: auto;
+}
+.event-pill {
+  font-size: 9px; padding: 1px 5px; background: #f0efe9;
+  border-radius: 8px; color: #444; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.income-strip { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; }
+.income-pip {
+  display: inline-block; width: 6px; height: 10px; border-radius: 1px;
+  &.lvl-low { background: #993c1d; }
+  &.lvl-mid { background: #d4a85d; }
+  &.lvl-high { background: #0f6e56; }
+}
+
+.rank-list li.winner { font-weight: 600; }
+.rank-list .final-num { font-variant-numeric: tabular-nums; color: #0f6e56; }
+.rank-list .ok { color: #0f6e56; margin-left: 6px; }
 </style>

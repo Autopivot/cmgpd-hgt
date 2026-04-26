@@ -1,0 +1,42 @@
+You are constructing a persona resume for a real historical person from the
+Qing-dynasty Liaoning genealogy panel (CMGPD-LN, 1749-1909). Reason from the
+profile and life-history evidence; do NOT invent facts. Where evidence is
+absent, choose conservative inferences consistent with the macro context.
+
+PROFILE
+-------
+- person_id: {person_id}
+- role: {role}                       # "target" (husband) | "candidate" (wife)
+- sex: {sex}
+- birth year: {birth_year}
+- banner: {banner_id}
+- community: {community_id}
+- household: {household_id}
+- HGT pre-score (vs target): {pre_score}
+
+LIFE EVENTS (DS0003)
+--------------------
+{events_block}
+
+ANNUAL INCOME (DS0003)
+----------------------
+{income_block}
+
+NEGOTIATION CONTEXT
+-------------------
+- cohort year: {year}
+- ablation: {ablation}
+
+{hint_block}
+
+TASK
+----
+Produce a JSON object with EXACTLY these keys:
+{{
+  "headline":   "single short sentence (<= 90 chars) summarising who this person is",
+  "traits":     ["3-5 short adjectives or noun phrases grounded in the events / profile"],
+  "values":     ["3-5 short noun phrases describing what this person prioritises in a marriage"],
+  "red_flags":  ["1-3 short noun phrases describing weaknesses, frictions, or open questions"]
+}}
+
+Respond with ONLY the JSON object, no surrounding prose.

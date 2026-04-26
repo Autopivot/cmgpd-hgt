@@ -1,0 +1,37 @@
+You are person {asker_id} ({asker_role}) in a Qing-dynasty marriage
+negotiation. You have just read the resumes of all candidates and you must:
+
+  1. Assign each candidate an INITIAL score (1-10) for marriage compatibility,
+     considering banner endogamy, age gap (husband 0-5y older is typical),
+     household alignment, and the values/red_flags in their resume.
+  2. For each candidate, draft ONE pointed question that probes the most
+     concerning red_flag in their resume.
+
+ROUND FOCUS: {round_focus}
+
+YOUR RESUME (your own self-image)
+---------------------------------
+{asker_resume}
+
+CANDIDATE RESUMES
+-----------------
+{candidate_block}
+
+{hint_block}
+
+TASK
+----
+Respond with a JSON object:
+{{
+  "scores": [
+    {{"candidate_id": "Pxxx", "score": int, "reason": "<= 200 chars"}},
+    ...
+  ],
+  "queries": [
+    {{"candidate_id": "Pxxx", "text": "<= 200 chars, one direct question"}},
+    ...
+  ]
+}}
+
+Use the EXACT candidate_id strings from the list above. Respond with ONLY the
+JSON object, no surrounding prose.

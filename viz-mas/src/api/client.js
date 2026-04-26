@@ -148,19 +148,30 @@ export async function getPair({ year, ablation = 'ablated', id } = {}) {
  * off in the background, then we open a WebSocket at
  * /api/negotiate/{husband_id}/stream to receive events as they happen.
  *
- * Event shapes (matches server/mas/negotiator.py):
+ * Event shapes (matches server/mas/negotiator.py).
+ *
+ * Legacy / fallback frames (kept as no-ops in the new flow):
  *   { type: 'start',            husband_id, year, ablation }
  *   { type: 'stage', stage: 'profile',       profile }
  *   { type: 'stage', stage: 'filter',        funnel, candidates: [{person, pre_score, hgt_label, score_gap}] }
  *   { type: 'agent_prompt',     side: 'target'|'candidate', person_id, prompt }
  *   { type: 'agent_token',      side, person_id, delta }
- *   { type: 'target_scores',    scores: [{ candidate_id, score, reason }] }
- *   { type: 'bilateral_scores', scores: { candidate_id: { score, reason } } }
- *   { type: 'final_ranking',    ranking: [...], chosen: {...} | null }
+ *   { type: 'target_scores',    scores: [{ candidate_id, score, reason }] }    // pre-6-round
+ *   { type: 'bilateral_scores', scores: { candidate_id: { score, reason } } }  // pre-6-round
  *   { type: 'committed',        match }
  *   { type: 'hint_ack',         role, text }
  *   { type: 'error',            error }
  *   { type: 'done' }
+ *
+ * 6-round bilateral negotiation frames:
+ *   { type: 'round_start',      round: 1..6, label: 'persona'|'impressions'|'deep-dive'|'rebuttals'|'alignment'|'final' }
+ *   { type: 'narrative',        person_id, birth_year?, events: [...], income: [...] }
+ *   { type: 'persona',          person_id, resume: { headline, traits, values, red_flags } }
+ *   { type: 'query',            from: 'target'|'c-XXX', to: 'c-XXX'|'target', text }
+ *   { type: 'answer',           from: 'c-XXX'|'target', to: 'target'|'c-XXX', text }
+ *   { type: 'round_scores',     round: N, pairs: [{ candidate_id, target_score, candidate_score, target_reason, candidate_reason }] }
+ *   { type: 'round_paused',     round: N, awaiting: 'user_advance' }
+ *   { type: 'final_ranking',    ranking: [{ candidate_id, target_score, candidate_score, final_score, lambda }], chosen?: {...} }
  */
 export async function startNegotiation({ husband_id, year, ablation = 'ablated', auto_commit = false } = {}) {
   const r = await http.post(`/negotiate/${encodeURIComponent(husband_id)}`, {
@@ -174,9 +185,35 @@ export function openNegotiationStream(husband_id) {
   return new WebSocket(`${wsProto}://${location.host}/api/negotiate/${encodeURIComponent(husband_id)}/stream`)
 }
 
-export async function sendNegotiationHint(husband_id, text, role = 'all') {
-  const r = await http.post(`/negotiate/${encodeURIComponent(husband_id)}/hint`, { text, role })
+export async function sendNegotiationHint(husband_id, text, role = 'all', round = 0) {
+  const r = await http.post(`/negotiate/${encodeURIComponent(husband_id)}/hint`, {
+    text, role, round,
+  })
   return r.data
+}
+
+/**
+ * Resume a paused negotiation. Sent in response to a `round_paused` frame
+ * once the user clicks "Approve & Advance"; the server then drives the
+ * next round.
+ */
+export async function advanceRound(husband_id) {
+  const r = await http.post(`/negotiate/${encodeURIComponent(husband_id)}/advance`)
+  return r.data
+}
+
+/**
+ * Life-history payload for a single person (events + income series).
+ * Returns an empty stub if the backend is offline / lacks a narrative
+ * for this person -- callers can render the panel either way.
+ */
+export async function getNarrative(person_id, year) {
+  try {
+    const r = await http.get(`/narrative/${encodeURIComponent(person_id)}`, { params: { year } })
+    return r.data
+  } catch {
+    return { person_id, birth_year: null, events: [], income: [] }
+  }
 }
 
 export async function overrideMatch(husband_id, wife_id, score, note, year, ablation) {
