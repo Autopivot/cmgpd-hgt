@@ -40,9 +40,19 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (
+    BackgroundTasks, FastAPI, HTTPException,
+    WebSocket, WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+# Multi-Agent System (MAS) modules — per-person LLM negotiation,
+# WebSocket fan-out, hint storage, accepted-match log.
+from .mas import agent as mas_agent
+from .mas.negotiator import negotiate as mas_negotiate
+from .mas.state import state as mas_state
+from .mas.ws_broker import broker as mas_broker
 
 ROOT = Path(__file__).resolve().parents[1]
 # Single canonical data source: D:/projects/VIS_2026/NEW/viz/data/. Both
@@ -233,77 +243,124 @@ async def api_rules_post(body: dict):
     return {"macro": _macro.model_dump(), "motifs": _motifs.model_dump()}
 
 
-# ── WebSocket: streamed agent negotiation ─────────────────────────────
-@app.websocket("/api/negotiate/{pair_id}/stream")
-async def negotiate_stream(ws: WebSocket, pair_id: int, year: int = 1882, ablation: str = "ablated"):
+# ──────────────────────────────────────────────────────────────────────
+# MAS — per-husband multi-agent LLM negotiation
+# ──────────────────────────────────────────────────────────────────────
+#
+# Endpoints follow the reference at
+# D:/projects/jiapu-hgt-final/backend/app/routers/negotiate.py.
+# Each husband gets ONE negotiation session at topic
+# `negotiate:{husband_id}`. Inside that session: the husband's LLM
+# agent scores K candidate wives, then each candidate that crosses
+# `BILATERAL_THRESHOLD` runs ITS OWN LLM call to score the husband
+# back. So every person involved gets to "communicate" with the model.
+# Token deltas stream out over the WebSocket so V5 fills in live.
+
+class _NegotiateStartBody(BaseModel):
+    year: int
+    ablation: str = "ablated"
+    auto_commit: bool = False
+
+
+@app.post("/api/negotiate/{husband_id}")
+async def api_negotiate_start(
+    husband_id: str, body: _NegotiateStartBody, background: BackgroundTasks,
+):
+    """Kick off a negotiation in the background; the live event stream is at
+    WS /api/negotiate/{husband_id}/stream and the cached final result at
+    GET /api/negotiate/{husband_id}/result.
+    """
+    topic = f"negotiate:{husband_id}"
+    mas_broker.reset(topic)   # fresh replay buffer per run
+    background.add_task(
+        mas_negotiate, husband_id, body.year, body.ablation,
+        auto_commit=body.auto_commit,
+    )
+    return {"status": "started", "husband_id": husband_id, "topic": topic}
+
+
+@app.websocket("/api/negotiate/{husband_id}/stream")
+async def api_negotiate_stream(ws: WebSocket, husband_id: str):
     await ws.accept()
+    topic = f"negotiate:{husband_id}"
+    q = await mas_broker.subscribe(topic)
     try:
-        c = load_cohort(year, ablation)
-        if not (0 <= pair_id < len(c["pairs"])):
-            await ws.send_json({"event": "error", "message": f"pair id {pair_id} out of range"})
-            await ws.close()
-            return
-        pair = c["pairs"][pair_id]
-        s = float(pair.get("score", 0.0))
-        gap = float(pair.get("score_gap", 0.0))
-        patri = float(pair.get("patri_path_count", 0.0))
-        same_lin = bool(pair.get("same_lineage", False))
-        era = pair.get("era") or "regular"
-        hungarian = pair.get("hungarian_correct")
-
-        # Open frame
-        await ws.send_json({
-            "event": "round-start",
-            "pair_id": pair_id,
-            "husband_id": pair["husband_id"],
-            "wife_id": pair["wife_id"],
-        })
-        await asyncio.sleep(0.20)
-
-        # Stream agents one at a time, applying the live macro weights.
-        agents = [
-            ("paternal-prior",
-             _macro.paternal_lineage * (0.6 * patri) - 1.0,
-             "patrilineal scaffold; +0.6 logit per visible 2-hop path"),
-            ("sibling-overlap",
-             _macro.sibling_overlap * (0.35 if patri >= 2 else 0.0),
-             "shared siblings via father-of-husband"),
-            ("household-share",
-             _macro.household_share * (0.45 if patri >= 3 else 0.0),
-             "pre-marriage co-residence"),
-            ("banner-match",
-             _macro.banner_match * 0.3,
-             "same banner endogamy bonus"),
-            ("macro-temporal",
-             _macro.macro_era * {"regular": 0.4, "catchup": 0.0, "late": 0.2}.get(era, 0.0),
-             f"cohort era = {era}"),
-            ("endogamy-veto",
-             -2.0 if same_lin else 0.0,
-             "same-lineage = strict veto" if same_lin else "cross-lineage ok"),
-        ]
-        for name, score, note in agents:
-            await ws.send_json({
-                "event": "agent",
-                "agent": name,
-                "score": float(score),
-                "note": note,
-            })
-            await asyncio.sleep(0.30)
-
-        # Final aggregate frame
-        accept = (hungarian is True) if hungarian is not None else (s > 0)
-        await ws.send_json({
-            "event": "final",
-            "final_score": s,
-            "score_gap": gap,
-            "accept": bool(accept),
-            "hungarian_correct": hungarian,
-        })
-
+        while True:
+            event = await q.get()
+            await ws.send_json(event)
+            if event.get("type") == "done":
+                break
     except WebSocketDisconnect:
-        return
+        pass
+    except Exception as e:   # noqa: BLE001
+        log.warning("WS stream error for %s: %s", topic, e)
     finally:
+        await mas_broker.unsubscribe(topic, q)
         try:
             await ws.close()
         except Exception:
             pass
+
+
+class _HintBody(BaseModel):
+    text: str
+    role: str = "all"   # "all" | "target" | "candidates"
+
+
+@app.post("/api/negotiate/{husband_id}/hint")
+async def api_negotiate_hint(husband_id: str, body: _HintBody):
+    mas_state.add_hint(husband_id, body.text, body.role)
+    await mas_broker.publish(
+        f"negotiate:{husband_id}",
+        {"type": "hint_ack", "role": body.role, "text": body.text},
+    )
+    return {"status": "ok", "n_hints": mas_state.count_hints(husband_id)}
+
+
+@app.get("/api/negotiate/{husband_id}/hints")
+async def api_negotiate_hints(husband_id: str):
+    return mas_state.list_hints(husband_id)
+
+
+class _OverrideBody(BaseModel):
+    wife_id: str
+    score: float | None = None
+    note: str | None = None
+
+
+@app.post("/api/negotiate/{husband_id}/override")
+async def api_negotiate_override(husband_id: str, body: _OverrideBody):
+    rec = mas_state.commit_match(
+        husband_id=husband_id, wife_id=body.wife_id,
+        score=body.score, source="override", note=body.note or "",
+    )
+    await mas_broker.publish(
+        f"negotiate:{husband_id}",
+        {"type": "committed", "match": rec},
+    )
+    return {"status": "ok", "match": rec}
+
+
+@app.get("/api/negotiate/accepted")
+async def api_accepted_all():
+    return mas_state.all_accepted()
+
+
+# ── LLM config (set DASHSCOPE key + model name from the title bar) ────
+class _LLMConfigBody(BaseModel):
+    api_key: str | None = None
+    model: str | None = None
+
+
+@app.get("/api/llm_config")
+async def api_llm_config_get():
+    return mas_agent.get_config()
+
+
+@app.post("/api/llm_config")
+async def api_llm_config_post(body: _LLMConfigBody):
+    return mas_agent.set_config(api_key=body.api_key, model=body.model)
+
+
+import logging   # noqa: E402  (keep at bottom; only used by the WS handler)
+log = logging.getLogger("server.main")

@@ -1,285 +1,512 @@
 <template>
-  <div class="panel">
+  <div class="panel battle">
     <div class="panel-head">
       <span>V5 · Agent Arena · MAS Negotiation</span>
-      <span class="tiny muted">{{ headLabel }}</span>
-      <button class="fs-btn" @click="bus.emit('full-screen', 'v5')" title="Full screen">⛶</button>
+      <span class="actions">
+        <span class="tiny muted" v-if="husband">t-{{ husband.id }}</span>
+        <span v-if="streamState" class="stream-state tiny" :class="streamState">{{ streamState }}</span>
+        <button class="btn ghost" :disabled="!husband || running" @click="startBattle">▶ arena</button>
+        <button class="fs-btn" @click="bus.emit('full-screen', 'v5')" title="Full screen">⛶</button>
+      </span>
     </div>
-    <div class="panel-body">
-      <div v-if="!pair" class="muted tiny">
-        No pair selected. Click a hex/dot in V3 or a row in V2 to start a negotiation round.
-      </div>
-      <div v-else>
-        <div class="pair-head">
-          <span class="chip">{{ pair.husband_id }}</span>
-          <span class="muted">×</span>
-          <span class="chip">{{ pair.wife_id }}</span>
-          <span class="dot" :class="hClass(pair.hungarian_correct)" :title="hLabel(pair.hungarian_correct)"></span>
-          <span class="tiny muted">score = {{ pair.score?.toFixed(2) }} · gap = {{ pair.score_gap?.toFixed(2) }}</span>
-          <span class="stream-state tiny" :class="streamState">{{ streamState }}</span>
-        </div>
-
-        <!-- Streamed agent rounds -->
-        <ul class="agent-list">
-          <li v-for="(a, i) in rounds" :key="i" class="agent-row">
-            <span class="agent-name">{{ a.agent }}</span>
-            <span class="bar-track">
-              <span class="bar-fill" :class="{ neg: a.score < 0 }" :style="barStyle(a.score)"></span>
-            </span>
-            <span class="agent-score">{{ a.score?.toFixed(2) }}</span>
-            <span class="tiny muted note">{{ a.note }}</span>
-          </li>
-          <li v-if="finalEvt" class="final">
-            <span class="agent-name">FINAL</span>
-            <span class="bar-track">
-              <span class="bar-fill final" :style="barStyle(finalEvt.final_score)"></span>
-            </span>
-            <span class="agent-score">{{ finalEvt.final_score?.toFixed(2) }}</span>
-            <span class="chip" :class="finalEvt.accept ? 'accept' : 'reject'">
-              {{ finalEvt.accept ? 'ACCEPT' : 'REJECT' }}
-            </span>
-          </li>
-        </ul>
-
-        <!-- SHAP waterfall: per-component decomposition of the final logit -->
-        <div v-if="shap" class="shap-block">
-          <div class="shap-head tiny">
-            <strong>SHAP-style waterfall · feature attribution</strong>
-            <span class="muted">Σ = {{ shapSum.toFixed(2) }} (logit)</span>
+    <div class="panel-body no-pad">
+      <!-- Husband profile -->
+      <div class="row target-row">
+        <div class="target">
+          <div v-if="!husband" class="muted tiny" style="padding:6px">
+            click a husband in V3 (hex / scatter) or V2 to load target
           </div>
-          <svg :viewBox="`0 0 ${shapW} ${shapH}`" class="shap-svg" preserveAspectRatio="xMidYMid meet">
-            <g>
-              <line :x1="shapZeroX" :x2="shapZeroX" :y1="0" :y2="shapH"
-                    stroke="#888780" stroke-dasharray="3 2" stroke-width="0.5" />
-              <g v-for="(b, i) in shapBars" :key="i">
-                <rect :x="b.x" :y="b.y" :width="b.w" :height="b.h"
-                      :fill="b.fill" :stroke="b.stroke" stroke-width="0.5"
-                      :opacity="b.is_total ? 1.0 : 0.85" />
-                <text :x="b.labelX" :y="b.y + b.h * 0.5 + 3"
-                      :text-anchor="b.labelX < shapZeroX ? 'end' : 'start'"
-                      class="shap-label">{{ b.label }}</text>
-                <text :x="b.valueX" :y="b.y + b.h * 0.5 + 3"
-                      :text-anchor="b.value >= 0 ? 'start' : 'end'"
-                      class="shap-value">{{ b.value >= 0 ? '+' : '' }}{{ b.value.toFixed(2) }}</text>
-              </g>
-            </g>
-          </svg>
+          <div v-else>
+            <div class="t-header">
+              <span class="chip">t-{{ husband.id }}</span>
+              <span class="tiny" v-if="husbandProfile">
+                sex={{ husbandProfile.sex || '—' }} · b{{ husbandProfile.birth_year ?? '?' }}
+                · bnr{{ husbandProfile.banner_id ?? '?' }}
+                · com{{ husbandProfile.community_id ?? '?' }}
+              </span>
+              <span class="tiny muted" v-else>fetching profile…</span>
+            </div>
+            <div class="cohort-info tiny muted">
+              cohort {{ appState.year }} ({{ appState.ablation }}) ·
+              {{ candidates.length }} top candidates
+            </div>
+          </div>
         </div>
+      </div>
+
+      <!-- Hint console -->
+      <div class="row hint-row">
+        <div class="hint-head">
+          <span class="tiny muted">
+            hint console · use <code>@c-{wife_id}</code> or <code>@all</code> · verbs:
+            boost / penalise / eliminate / accept
+          </span>
+        </div>
+        <div class="hint-log" ref="logRef">
+          <div v-for="(l, i) in systemLog" :key="i" class="log-line" :class="'lvl-'+l.level">
+            <span class="t">{{ l.t }}</span>
+            <span class="m" v-html="l.html"></span>
+          </div>
+          <div v-if="!systemLog.length" class="muted tiny" style="padding:4px 6px">no messages</div>
+        </div>
+        <div class="hint-input">
+          <span class="verbs">
+            <button class="verb" v-for="v in verbs" :key="v" @click="appendVerb(v)">{{ v }}</button>
+          </span>
+          <input
+            class="hint-field"
+            v-model="hint"
+            placeholder="@c-P12345 boost: same banner, +2"
+            :disabled="!husband"
+            @keydown.enter="sendHint"
+          />
+          <button class="btn" :disabled="!hint.trim() || !husband" @click="sendHint">send</button>
+        </div>
+      </div>
+
+      <!-- Arena grid: one card per candidate (LLM agent per wife) -->
+      <div class="row arena-row">
+        <div v-if="!agents.length" class="muted tiny" style="padding:8px">
+          no candidates yet — press ▶ arena to spin up the per-person agents
+        </div>
+        <div v-else class="arena-grid">
+          <div v-for="a in agents" :key="a.id" class="arena-card"
+               :class="{ dim: a.eliminated, pick: accepted && accepted.id === a.id }">
+            <div class="card-head">
+              <span class="chip c">c-{{ a.id }}</span>
+              <span class="score" :class="scoreClass(a.target_score)">
+                {{ a.target_score?.toFixed?.(1) ?? '—' }}
+              </span>
+              <span class="bilateral tiny" v-if="a.candidate_score != null"
+                    :title="`candidate (wife) returned ${a.candidate_score.toFixed(1)}`">
+                ⇄ {{ a.candidate_score?.toFixed?.(1) }}
+              </span>
+            </div>
+            <div class="card-meta tiny" v-if="a.profile">
+              b{{ a.profile.birth_year ?? '?' }} · bnr{{ a.profile.banner_id ?? '?' }} ·
+              com{{ a.profile.community_id ?? '?' }}
+            </div>
+            <div class="card-pre tiny muted">
+              HGT {{ a.pre_score?.toFixed?.(2) }} · gap {{ a.score_gap?.toFixed?.(2) }} ·
+              {{ a.hgt_label === 1 ? 'GT pair' : 'hard neg' }}
+            </div>
+            <div class="card-feed">
+              <div v-if="a.target_reason" class="reason">
+                <strong>H→W:</strong> {{ a.target_reason }}
+              </div>
+              <div v-if="a.candidate_reason" class="reason cand">
+                <strong>W→H:</strong> {{ a.candidate_reason }}
+              </div>
+              <div v-if="!a.target_reason && a.feed.length" class="feed-tokens">
+                {{ a.feed.join('') }}
+              </div>
+            </div>
+            <div class="card-actions">
+              <button class="tiny linkbtn"
+                      :disabled="a.eliminated || (accepted && accepted.id === a.id)"
+                      @click="acceptOne(a)">accept</button>
+              <button class="tiny linkbtn warn"
+                      :disabled="a.eliminated"
+                      @click="eliminate(a)">eliminate</button>
+              <button class="tiny linkbtn"
+                      @click="boost(a, +0.5)">boost</button>
+              <button class="tiny linkbtn"
+                      @click="boost(a, -0.5)">penalise</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Final ranking footer -->
+      <div v-if="finalRanking" class="row footer-row">
+        <div class="tiny muted">
+          final ranking · top {{ Math.min(3, finalRanking.length) }}:
+        </div>
+        <ol class="rank-list tiny">
+          <li v-for="r in finalRanking.slice(0, 3)" :key="r.candidate_id">
+            <span class="chip c">c-{{ r.candidate_id }}</span>
+            <span>final {{ r.final_score?.toFixed(2) }}</span>
+            <span class="muted">(t{{ r.target_score }}/c{{ r.candidate_score ?? '—' }} · pre{{ r.pre_score?.toFixed(2) }})</span>
+          </li>
+        </ol>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, inject, computed, watch, onMounted, onUnmounted } from 'vue'
-import { streamAgentRound, getShap } from '../api/client.js'
+import { ref, inject, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import {
+  startNegotiation, openNegotiationStream, sendNegotiationHint, overrideMatch, getPair,
+} from '../api/client.js'
 import bus from '../utils/eventbus.js'
 
 const appState = inject('appState')
-const pair = ref(null)
-const rounds = ref([])
-const finalEvt = ref(null)
+const husband = ref(null)        // { id, ... }
+const husbandProfile = ref(null) // { sex, birth_year, banner_id, ... } from "stage:profile"
+const candidates = ref([])       // raw candidates from "stage:filter"
+const agents = ref([])           // per-candidate cards (mirrors candidates + LLM scores)
+const finalRanking = ref(null)
+const accepted = ref(null)
+const running = ref(false)
 const streamState = ref('idle')
-const shap = ref(null)
+const systemLog = ref([])
+const logRef = ref(null)
+const hint = ref('')
+const verbs = ['boost', 'penalise', 'eliminate', 'accept']
 
-let activeStream = null
+let activeWS = null
 
-const headLabel = computed(() => {
-  if (!pair.value) return 'select a pair in V3 / V2'
-  return `pair #${pair.value.id} · ${rounds.value.length} agent(s)`
-})
-
-function hClass(v) {
-  if (v === true) return 'ok'
-  if (v === false) return 'bad'
-  return 'na'
-}
-function hLabel(v) {
-  if (v === true) return 'Hungarian: correct'
-  if (v === false) return 'Hungarian: wrong wife'
-  return 'Hungarian: n/a (negative)'
+// ── Logging (visible in the hint console) ──────────────────────────────
+function logSys(html, level = 'info') {
+  const t = new Date().toTimeString().slice(0, 8)
+  systemLog.value.push({ t, html, level })
+  if (systemLog.value.length > 60) systemLog.value.splice(0, systemLog.value.length - 60)
+  nextTick(() => { if (logRef.value) logRef.value.scrollTop = logRef.value.scrollHeight })
 }
 
-// Map [-3, 8] (typical logit range) to [0, 100%].
-function barWidthPct(s) {
-  const lo = -3, hi = 8
-  const v = Math.max(lo, Math.min(hi, s ?? 0))
-  return (v - lo) / (hi - lo) * 100
+// ── Score class ────────────────────────────────────────────────────────
+function scoreClass(s) {
+  if (s == null) return 'na'
+  if (s >= 7) return 'hi'
+  if (s >= 5) return 'mid'
+  return 'lo'
 }
-function barStyle(s) { return { width: `${barWidthPct(s).toFixed(1)}%` } }
 
-// ── SHAP waterfall geometry ────────────────────────────────────────
-const shapW = 360
-const barH = 18
-const barGap = 4
-const shapPadL = 110
-const shapPadR = 70
-
-const shapH = computed(() => (shap.value?.components?.length || 0) * (barH + barGap) + 8)
-const shapZeroX = computed(() => {
-  const c = shap.value?.components || []
-  if (!c.length) return shapW / 2
-  let mn = 0, mx = 0, run = 0
-  for (const p of c) {
-    if (p.is_total) continue
-    run += p.value || 0
-    mn = Math.min(mn, run)
-    mx = Math.max(mx, run)
-  }
-  const scale = (shapW - shapPadL - shapPadR) / Math.max(1e-6, mx - mn)
-  return shapPadL - mn * scale
-})
-const shapSum = computed(() => {
-  const c = shap.value?.components || []
-  return c.reduce((s, p) => s + (p.is_total ? 0 : p.value || 0), 0)
-})
-const shapBars = computed(() => {
-  const c = shap.value?.components || []
-  if (!c.length) return []
-  const innerW = shapW - shapPadL - shapPadR
-  // Domain: cumulative range across non-total components
-  let mn = 0, mx = 0, run = 0
-  for (const p of c) {
-    if (p.is_total) continue
-    run += p.value || 0
-    mn = Math.min(mn, run); mx = Math.max(mx, run)
-  }
-  const scale = innerW / Math.max(1e-6, mx - mn)
-
-  const bars = []
-  let cum = 0
-  c.forEach((p, i) => {
-    const v = p.value || 0
-    const y = i * (barH + barGap) + 4
-    if (p.is_total) {
-      const x0 = shapPadL - mn * scale
-      const x1 = x0 + v * scale
-      bars.push({
-        x: Math.min(x0, x1), y, w: Math.abs(x1 - x0), h: barH,
-        fill: '#1a1a1a', stroke: '#0a0a0a', is_total: true,
-        label: p.label, value: v,
-        labelX: shapPadL - 4, valueX: x1 + 3,
-      })
-      return
-    }
-    const x0 = shapPadL - mn * scale + cum * scale
-    const x1 = x0 + v * scale
-    cum += v
-    bars.push({
-      x: Math.min(x0, x1), y, w: Math.abs(x1 - x0), h: barH,
-      fill: v >= 0 ? '#0f6e56' : '#993c1d',
-      stroke: v >= 0 ? '#0a4a3a' : '#7a2a16',
-      is_total: false,
-      label: p.label, value: v,
-      labelX: shapPadL - 4, valueX: x1 + 3,
-    })
-  })
-  return bars
-})
-
-// ── Stream lifecycle ───────────────────────────────────────────────
+// ── Cell-select / pair-select bridge ───────────────────────────────────
+//
+// V3 emits `hex-select` with `payload.pairs[*].husband_id`. We pick the
+// FIRST distinct husband as the negotiation target — multi-husband
+// selections (e.g. lasso) collapse to that. The user can then click ▶
+// arena to launch the per-person LLM round for him.
 function onHexSelect(payload) {
   const picks = payload?.pairs || []
-  if (!picks.length) {
-    pair.value = null
-    rounds.value = []
-    finalEvt.value = null
+  if (!picks.length) return
+  const husbandIds = Array.from(new Set(picks.map(p => p.husband_id).filter(Boolean)))
+  if (!husbandIds.length) return
+  // Pull a richer profile for the target husband.
+  loadHusband(husbandIds[0])
+}
+
+async function loadHusband(id) {
+  husband.value = { id }
+  husbandProfile.value = null
+  candidates.value = []
+  agents.value = []
+  finalRanking.value = null
+  accepted.value = null
+  // Pre-fetch one pair just to populate the chip; full profile arrives
+  // when the negotiation publishes its 'profile' stage event.
+  try {
+    // Fast lookup: scan the first cohort pair for this husband to grab a
+    // wife_id we don't really need. (No profile API exists yet on the
+    // frontend; the 'stage:profile' event will fill husbandProfile.)
+  } catch {}
+}
+
+// ── Start the negotiation ──────────────────────────────────────────────
+async function startBattle() {
+  if (!husband.value) return
+  closeWS()
+  agents.value = []
+  finalRanking.value = null
+  accepted.value = null
+  systemLog.value = []
+  streamState.value = 'starting'
+  running.value = true
+  logSys(`<b>start</b> negotiate ${husband.value.id} · cohort ${appState.year} · ${appState.ablation}`)
+
+  try {
+    await startNegotiation({
+      husband_id: husband.value.id,
+      year: appState.year,
+      ablation: appState.ablation,
+      auto_commit: false,
+    })
+  } catch (e) {
+    logSys(`POST /negotiate failed: ${e.message || e}`, 'err')
+    streamState.value = 'error'
+    running.value = false
     return
   }
-  pair.value = picks[0]
-  startStream()
-}
 
-function stopStream() {
-  if (activeStream) { activeStream.close(); activeStream = null }
-}
-
-async function startStream() {
-  stopStream()
-  rounds.value = []
-  finalEvt.value = null
-  shap.value = null
-  if (!pair.value) return
-  streamState.value = 'streaming'
-  activeStream = streamAgentRound({
-    year: appState.year, ablation: appState.ablation, pair_id: pair.value.id,
-    onEvent: (e) => {
-      if (e.event === 'agent') rounds.value = [...rounds.value, { agent: e.agent, score: e.score, note: e.note }]
-      else if (e.event === 'final') finalEvt.value = e
-    },
-    onDone: () => { streamState.value = 'done' },
-    onError: () => { streamState.value = 'error' },
-  })
-  // SHAP request runs in parallel with the stream.
-  try {
-    shap.value = await getShap({ year: appState.year, ablation: appState.ablation, pair_id: pair.value.id })
-  } catch {
-    shap.value = null
+  activeWS = openNegotiationStream(husband.value.id)
+  activeWS.onopen = () => { streamState.value = 'streaming' }
+  activeWS.onmessage = (ev) => {
+    try { handleEvent(JSON.parse(ev.data)) }
+    catch (e) { logSys(`bad ws frame: ${e}`, 'err') }
+  }
+  activeWS.onerror = () => { logSys('ws error', 'err'); streamState.value = 'error' }
+  activeWS.onclose = () => {
+    running.value = false
+    if (streamState.value === 'streaming') streamState.value = 'done'
   }
 }
 
-// React to slider changes in V6 — re-stream the current pair so weights apply.
-function onRulesUpdated() {
-  if (pair.value) startStream()
+function closeWS() {
+  if (activeWS) { try { activeWS.close() } catch {} ; activeWS = null }
 }
 
+// ── Event dispatch ─────────────────────────────────────────────────────
+function handleEvent(e) {
+  switch (e.type) {
+    case 'start':
+      logSys(`server picked up <b>${e.husband_id}</b>`); break
+    case 'stage':
+      if (e.stage === 'profile') {
+        husbandProfile.value = e.profile
+        logSys(`profile: sex=${e.profile.sex} · banner ${e.profile.banner_id}`)
+      } else if (e.stage === 'filter') {
+        candidates.value = e.candidates
+        // Seed the agent grid from the candidate list (target_score arrives next).
+        agents.value = e.candidates.map(c => ({
+          id: c.person.id,
+          profile: c.person,
+          pre_score: c.pre_score,
+          score_gap: c.score_gap,
+          hgt_label: c.hgt_label,
+          target_score: null,
+          target_reason: '',
+          candidate_score: null,
+          candidate_reason: '',
+          feed: [],
+          eliminated: false,
+        }))
+        logSys(`filter: kept ${e.candidates.length}/${e.funnel.in_cohort}`)
+      }
+      break
+    case 'agent_prompt':
+      logSys(`<i>prompt</i> ${e.side} <b>${e.person_id}</b>`, 'sys')
+      break
+    case 'agent_token':
+      // Append streamed tokens to the corresponding agent's feed.
+      if (e.side === 'target') {
+        // Target = husband; route tokens to ALL candidate cards (the LLM is
+        // emitting one big response that scores every candidate). Append
+        // to a shared feed buffer for the husband for now.
+        for (const a of agents.value) {
+          if (a.feed.length < 200) a.feed.push(e.delta)
+        }
+      } else if (e.side === 'candidate') {
+        const a = agents.value.find(a => a.id === e.person_id)
+        if (a && a.feed.length < 200) a.feed.push(e.delta)
+      }
+      break
+    case 'target_scores':
+      for (const ts of e.scores) {
+        const a = agents.value.find(a => a.id === ts.candidate_id)
+        if (a) {
+          a.target_score = ts.score
+          a.target_reason = ts.reason
+          a.feed = []   // reasons supersede streamed tokens
+        }
+      }
+      logSys(`target scored ${e.scores.length} candidates`)
+      break
+    case 'bilateral_scores':
+      for (const [cid, bs] of Object.entries(e.scores)) {
+        const a = agents.value.find(a => a.id === cid)
+        if (a) {
+          a.candidate_score = bs.score
+          a.candidate_reason = bs.reason
+        }
+      }
+      logSys(`bilateral: ${Object.keys(e.scores).length} candidates returned a score`)
+      break
+    case 'final_ranking':
+      finalRanking.value = e.ranking
+      if (e.chosen) {
+        accepted.value = { id: e.chosen.candidate_id, score: e.chosen.final_score }
+        logSys(`auto-pick → <b>c-${e.chosen.candidate_id}</b> @ ${e.chosen.final_score.toFixed(2)}`, 'ok')
+        bus.emit('match-accepted', { husband_id: husband.value.id, wife_id: e.chosen.candidate_id, score: e.chosen.final_score })
+      } else {
+        logSys('no auto-accept; pick a candidate manually')
+      }
+      break
+    case 'committed':
+      accepted.value = { id: e.match.wife_id, score: e.match.score }
+      logSys(`committed → <b>c-${e.match.wife_id}</b>`, 'ok')
+      bus.emit('match-accepted', { husband_id: husband.value.id, wife_id: e.match.wife_id, score: e.match.score })
+      break
+    case 'hint_ack':
+      logSys(`hint accepted (role=${e.role}): ${e.text}`)
+      break
+    case 'error':
+      logSys(`server error: ${e.error}`, 'err')
+      break
+    case 'done':
+      streamState.value = 'done'
+      logSys('stream done')
+      break
+  }
+}
+
+// ── Hint console ───────────────────────────────────────────────────────
+function appendVerb(v) {
+  if (hint.value && !hint.value.endsWith(' ')) hint.value += ' '
+  hint.value += v + ' '
+}
+
+function parseHint(txt) {
+  const ids = []
+  const re = /@c-([A-Za-z0-9_]+)/g
+  let m
+  while ((m = re.exec(txt))) ids.push(m[1])
+  const verb = (txt.match(/\b(boost|penalise|penalize|eliminate|accept)\b/i)?.[1] || '').toLowerCase()
+  return { verb: verb === 'penalize' ? 'penalise' : verb, ids: [...new Set(ids)] }
+}
+
+async function sendHint() {
+  const text = hint.value.trim()
+  if (!text || !husband.value) return
+  const { verb, ids } = parseHint(text)
+  // Local UI effects (mirror the server-side hint).
+  for (const id of ids) {
+    const a = agents.value.find(a => a.id === id || ('P' + a.id) === id)
+    if (!a) continue
+    if (verb === 'eliminate') a.eliminated = true
+    else if (verb === 'accept') acceptOne(a)
+    else if (verb === 'boost' && a.target_score != null) a.target_score = Math.min(10, a.target_score + 0.5)
+    else if (verb === 'penalise' && a.target_score != null) a.target_score = Math.max(0, a.target_score - 0.5)
+  }
+  try { await sendNegotiationHint(husband.value.id, text, 'all') }
+  catch (e) { logSys(`hint POST failed: ${e.message || e}`, 'err') }
+  hint.value = ''
+  logSys(`<b>hint</b> ${text}`)
+}
+
+function boost(a, delta) {
+  if (a.target_score == null) return
+  a.target_score = Math.max(0, Math.min(10, a.target_score + delta))
+  logSys(`local ${delta >= 0 ? 'boost' : 'penalise'} c-${a.id} (${delta > 0 ? '+' : ''}${delta})`)
+}
+
+function eliminate(a) {
+  a.eliminated = true
+  logSys(`local eliminate c-${a.id}`)
+}
+
+async function acceptOne(a) {
+  if (!husband.value) return
+  accepted.value = { id: a.id, score: a.target_score ?? 0.75 }
+  logSys(`<b>accept</b> c-${a.id}`, 'ok')
+  bus.emit('match-accepted', {
+    husband_id: husband.value.id, wife_id: a.id, score: a.target_score,
+  })
+  try { await overrideMatch(husband.value.id, a.id, a.target_score ?? 0.75, 'user-accept') }
+  catch (e) { logSys(`override POST failed: ${e.message || e}`, 'err') }
+}
+
+// ── Lifecycle ──────────────────────────────────────────────────────────
 watch(() => `${appState.year}|${appState.ablation}`, () => {
-  pair.value = null
-  rounds.value = []
-  finalEvt.value = null
-  shap.value = null
-  stopStream()
+  husband.value = null
+  husbandProfile.value = null
+  candidates.value = []
+  agents.value = []
+  finalRanking.value = null
+  accepted.value = null
+  closeWS()
 })
 
-onMounted(() => {
-  bus.on('hex-select', onHexSelect)
-  bus.on('rules-updated', onRulesUpdated)
-})
+onMounted(() => bus.on('hex-select', onHexSelect))
 onUnmounted(() => {
   bus.off('hex-select', onHexSelect)
-  bus.off('rules-updated', onRulesUpdated)
-  stopStream()
+  closeWS()
 })
 </script>
 
 <style lang="less" scoped>
-.pair-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
-.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.dot.ok { background: #0f6e56; }
-.dot.bad { background: #993c1d; }
-.dot.na { background: #d3d3d3; border: 1px solid #aaa; }
+.battle .panel-body { display: flex; flex-direction: column; }
+.row { padding: 6px 8px; border-bottom: 1px solid #eee; }
+.row:last-child { border-bottom: none; }
+
+.target-row .t-header { display: flex; align-items: center; gap: 6px; }
+.cohort-info { margin-top: 2px; }
+
+.hint-row { background: #fafaf5; }
+.hint-head { font-size: 10px; color: #666; margin-bottom: 4px; }
+.hint-log {
+  background: #fff; border: 1px solid #ddd; border-radius: 3px;
+  height: 60px; overflow: auto;
+  font-size: 10px; font-family: "Monaco", monospace;
+}
+.log-line { padding: 1px 6px; }
+.log-line .t { color: #888; margin-right: 6px; }
+.log-line.lvl-err .m { color: #a40000; }
+.log-line.lvl-ok .m { color: #0f6e56; }
+.log-line.lvl-sys .m { color: #555; font-style: italic; }
+.hint-input {
+  display: flex; align-items: center; gap: 4px; margin-top: 4px;
+  flex-wrap: wrap;
+}
+.hint-input .hint-field {
+  flex: 1 1 200px; min-width: 0;
+  font-family: "Monaco", monospace; font-size: 11px;
+  padding: 3px 6px; border: 1px solid #999; border-radius: 3px;
+}
+.verbs { display: inline-flex; gap: 2px; }
+.verb {
+  font-size: 9px; padding: 1px 5px; border: 1px solid #ccc;
+  background: #fafafa; cursor: pointer; border-radius: 2px;
+  &:hover { background: #ffe082; border-color: #d4a85d; }
+}
+
+.arena-row { flex: 1; min-height: 0; overflow: auto; }
+.arena-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 6px;
+}
+.arena-card {
+  background: #fff; border: 1px solid #ddd; border-radius: 4px;
+  padding: 5px 6px; font-size: 11px;
+  display: flex; flex-direction: column; gap: 3px;
+  &.dim { opacity: 0.4; }
+  &.pick { border-color: #0f6e56; box-shadow: 0 0 0 2px #0f6e5644; }
+}
+.card-head { display: flex; align-items: center; gap: 5px; }
+.card-head .score {
+  font-weight: 700; font-variant-numeric: tabular-nums;
+  padding: 1px 5px; border-radius: 2px;
+  &.hi { background: #0f6e56; color: #fff; }
+  &.mid { background: #d4a85d; color: #1a1a1a; }
+  &.lo { background: #993c1d; color: #fff; }
+  &.na { color: #999; }
+}
+.bilateral { color: #555; margin-left: auto; }
+.card-meta, .card-pre { color: #666; }
+.card-feed {
+  font-size: 10px; color: #444;
+  background: #fafaf5; border-radius: 2px;
+  padding: 3px 5px; min-height: 18px; max-height: 78px; overflow: auto;
+  font-family: "Monaco", monospace;
+}
+.card-feed .reason { margin-bottom: 2px; }
+.card-feed .reason.cand { color: #0a4a3a; }
+.card-feed .feed-tokens { color: #888; font-style: italic; }
+.card-actions {
+  display: flex; gap: 3px; margin-top: 2px;
+  .linkbtn {
+    background: transparent; border: 1px solid #bbb; border-radius: 2px;
+    padding: 1px 5px; font-size: 9px; cursor: pointer;
+    &:hover { background: #ffe082; border-color: #d4a85d; }
+    &.warn { color: #993c1d; }
+    &:disabled { opacity: 0.4; cursor: not-allowed; }
+  }
+}
+
+.footer-row { background: #f5f5f0; }
+.rank-list { padding-left: 16px; }
+.rank-list li { margin: 1px 0; display: flex; align-items: center; gap: 6px; }
+
 .stream-state {
-  margin-left: auto;
-  padding: 1px 6px; border-radius: 2px;
+  margin-left: auto; padding: 1px 6px; border-radius: 2px;
   background: #f0efe9; color: #555;
+  &.starting { background: #fff7d6; color: #555; }
   &.streaming { background: #d4a85d; color: #1a1a1a; }
   &.done { background: #0f6e56; color: #fff; }
   &.error { background: #993c1d; color: #fff; }
 }
-.agent-list { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; }
-.agent-row, .final {
-  display: grid;
-  grid-template-columns: 110px 1fr 36px auto;
-  gap: 6px; align-items: center;
-  font-size: 11px;
-}
-.agent-name { color: #555; font-family: "Monaco", monospace; }
-.bar-track {
-  background: #f0efe9; height: 8px; border-radius: 2px; overflow: hidden;
-  border: 1px solid #ddd;
-}
-.bar-fill { display: block; height: 100%; background: #d4a85d; }
-.bar-fill.neg { background: #993c1d; }
-.bar-fill.final { background: #1a1a1a; }
-.agent-score { text-align: right; font-variant-numeric: tabular-nums; }
-.note { padding-left: 4px; font-style: italic; }
-.final .agent-name { color: #1a1a1a; font-weight: 700; }
-.chip.accept { background: #0f6e56; color: #fff; }
-.chip.reject { background: #993c1d; color: #fff; }
 
-.shap-block { margin-top: 12px; border-top: 1px dashed #d4a85d; padding-top: 8px; }
-.shap-head { display: flex; justify-content: space-between; margin-bottom: 4px; }
-.shap-svg { width: 100%; height: auto; display: block; }
-.shap-label { font-size: 9px; fill: #444; font-family: "Monaco", monospace; }
-.shap-value { font-size: 9px; fill: #1a1a1a; font-family: "Monaco", monospace; font-variant-numeric: tabular-nums; }
+code { background: #eee; padding: 0 3px; border-radius: 2px; font-family: "Monaco", monospace; }
+.actions { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; justify-content: flex-end; }
 </style>

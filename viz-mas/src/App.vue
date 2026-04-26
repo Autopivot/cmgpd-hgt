@@ -15,6 +15,17 @@
           <button :class="{ active: state.ablation === 'unablated' }"
                   @click="setAblation('unablated')">unablated</button>
         </div>
+        <span class="lbl">LLM</span>
+        <input class="mini-input model" v-model="llmModel"
+               placeholder="qwen-plus-2025-04-28" @change="saveLLM" />
+        <input class="mini-input key" :type="showKey ? 'text' : 'password'"
+               v-model="llmKey" placeholder="DashScope API key" @change="saveLLM" />
+        <button class="eye" @click="showKey = !showKey" :title="showKey ? 'hide' : 'show'">
+          {{ showKey ? '●' : '○' }}
+        </button>
+        <span class="llm-status" :class="{ on: llmUseLLM }">
+          {{ llmUseLLM ? 'llm' : 'stub' }}
+        </span>
       </div>
       <div class="actions">
         <span class="status" :class="{ ok: healthy }">{{ healthy ? 'backend ok' : 'static data' }}</span>
@@ -49,7 +60,7 @@ import HexEmbeddingView from './components/HexEmbeddingView.vue'
 import BipartiteDetailView from './components/BipartiteDetailView.vue'
 import AgentBattleView from './components/AgentBattleView.vue'
 import RulerInjectorView from './components/RulerInjectorView.vue'
-import { health, ALL_YEARS } from './api/client.js'
+import { health, ALL_YEARS, getLLMConfig, setLLMConfig } from './api/client.js'
 import bus from './utils/eventbus.js'
 
 // Single global cohort state. Provided to all child views via `inject('appState')`.
@@ -63,6 +74,35 @@ provide('appState', state)
 
 const healthy = ref(false)
 let tick = null
+
+// LLM config (per-person Qwen agent in V5)
+const llmModel = ref('qwen-plus-2025-04-28')
+const llmKey = ref('')
+const llmUseLLM = ref(false)
+const showKey = ref(false)
+
+async function loadLLM() {
+  try {
+    const c = await getLLMConfig()
+    llmModel.value = c.model || 'qwen-plus-2025-04-28'
+    llmUseLLM.value = !!c.use_llm
+  } catch {}
+  // Restore key from localStorage if present (server only keeps in-memory).
+  const saved = localStorage.getItem('cmgpd-dashscope-key') || ''
+  if (saved && !llmUseLLM.value) {
+    llmKey.value = saved
+    await saveLLM()
+  }
+}
+async function saveLLM() {
+  try {
+    const body = { model: llmModel.value }
+    if (llmKey.value) body.api_key = llmKey.value
+    const c = await setLLMConfig(body)
+    llmUseLLM.value = !!c.use_llm
+    if (llmKey.value) localStorage.setItem('cmgpd-dashscope-key', llmKey.value)
+  } catch (e) { console.warn('setLLMConfig failed', e) }
+}
 
 function notifyResize() {
   nextTick(() => window.dispatchEvent(new Event('resize')))
@@ -105,6 +145,7 @@ async function probe() {
 
 onMounted(() => {
   probe()
+  loadLLM()
   tick = setInterval(probe, 8000)
   bus.on('full-screen', handleFullScreen)
   bus.on('hex-select', handleHexSelect)
@@ -142,8 +183,9 @@ onUnmounted(() => {
   .title { font-size: 14px; font-weight: 600; letter-spacing: 0.4px; flex: 0 0 auto; color: #f3ecdf; }
   .cohort-config {
     flex: 1 1 auto;
-    display: flex; align-items: center; gap: 8px;
+    display: flex; align-items: center; gap: 6px;
     font-size: 10px;
+    flex-wrap: wrap;
     .lbl { color: #9b9b9b; letter-spacing: 0.6px; }
     .seg {
       background: #2a2a2a;
@@ -155,6 +197,24 @@ onUnmounted(() => {
         &:hover { background: #353535; }
         &.active { background: #d4a85d; color: #1a1a1a; }
       }
+    }
+    .mini-input {
+      height: 22px; background: #2a2a2a; color: #eaeaea;
+      border: 1px solid #555; border-radius: 3px;
+      padding: 0 6px; font-size: 10px;
+      font-family: "Monaco", "Menlo", "Consolas", monospace;
+    }
+    .mini-input.model { width: 130px; }
+    .mini-input.key { flex: 0 1 200px; min-width: 100px; }
+    .mini-input:focus { border-color: #ffd166; outline: none; }
+    .eye {
+      width: 22px; height: 22px; border: 1px solid #555; background: #2a2a2a;
+      color: #eaeaea; border-radius: 3px; cursor: pointer; font-size: 12px; line-height: 1;
+    }
+    .llm-status {
+      font-size: 9px; padding: 2px 6px; border-radius: 2px;
+      color: #9b9b9b; border: 1px solid #555;
+      &.on { color: #1a1a1a; background: #8aff96; border-color: #3a7a46; }
     }
   }
   .actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }

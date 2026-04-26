@@ -142,85 +142,58 @@ export async function getPair({ year, ablation = 'ablated', id } = {}) {
 }
 
 /**
- * View 5 — agent battle.
+ * View 5 — multi-agent LLM negotiation.
  *
- * Streamed mode (preferred): if the FastAPI backend is up, opens a WebSocket
- * to /api/negotiate/{pair_id}/stream and forwards the JSON events to
- * `onEvent`. The backend yields one event per agent with a small delay so
- * the arena fills incrementally. Returns a `close()` cancel handle.
+ * Per-husband flow: POST /api/negotiate/{husband_id} kicks the negotiator
+ * off in the background, then we open a WebSocket at
+ * /api/negotiate/{husband_id}/stream to receive events as they happen.
  *
- * Static mode (fallback): if the backend isn't reachable, replays the same
- * sequence client-side via setTimeout so V5 still feels live offline.
+ * Event shapes (matches server/mas/negotiator.py):
+ *   { type: 'start',            husband_id, year, ablation }
+ *   { type: 'stage', stage: 'profile',       profile }
+ *   { type: 'stage', stage: 'filter',        funnel, candidates: [{person, pre_score, hgt_label, score_gap}] }
+ *   { type: 'agent_prompt',     side: 'target'|'candidate', person_id, prompt }
+ *   { type: 'agent_token',      side, person_id, delta }
+ *   { type: 'target_scores',    scores: [{ candidate_id, score, reason }] }
+ *   { type: 'bilateral_scores', scores: { candidate_id: { score, reason } } }
+ *   { type: 'final_ranking',    ranking: [...], chosen: {...} | null }
+ *   { type: 'committed',        match }
+ *   { type: 'hint_ack',         role, text }
+ *   { type: 'error',            error }
+ *   { type: 'done' }
  */
-export function streamAgentRound({ year, ablation = 'ablated', pair_id, onEvent, onDone, onError } = {}) {
-  if (pair_id == null) { onDone && onDone(); return { close: () => {} } }
-
-  // Try WebSocket first.
-  const wsProto = location.protocol === 'https:' ? 'wss' : 'ws'
-  const url = `${wsProto}://${location.host}/api/negotiate/${pair_id}/stream?year=${year}&ablation=${ablation}`
-  let ws
-  try {
-    ws = new WebSocket(url)
-  } catch {
-    return _fallbackStream({ year, ablation, pair_id, onEvent, onDone, onError })
-  }
-  let closed = false
-  let gotAny = false
-  ws.addEventListener('message', (ev) => {
-    gotAny = true
-    try { onEvent && onEvent(JSON.parse(ev.data)) } catch (e) { onError && onError(e) }
+export async function startNegotiation({ husband_id, year, ablation = 'ablated', auto_commit = false } = {}) {
+  const r = await http.post(`/negotiate/${encodeURIComponent(husband_id)}`, {
+    year, ablation, auto_commit,
   })
-  ws.addEventListener('close', () => { if (!closed) onDone && onDone() })
-  ws.addEventListener('error', () => {
-    // Fall back to client-simulated stream if the connection failed
-    // before any event arrived (most likely the backend isn't running).
-    if (!gotAny && !closed) {
-      try { ws.close() } catch {}
-      _fallbackStream({ year, ablation, pair_id, onEvent, onDone, onError })
-    }
-  })
-  return {
-    close: () => { closed = true; try { ws.close() } catch {} },
-  }
+  return r.data
 }
 
-/** Client-side simulation of the WebSocket stream — same event shapes,
- *  same component decomposition as server/main.py:negotiate_stream. */
-async function _fallbackStream({ year, ablation, pair_id, onEvent, onDone, onError }) {
-  try {
-    const pair = await getPair({ year, ablation, id: pair_id })
-    if (!pair) { onDone && onDone(); return }
-    onEvent && onEvent({ event: 'round-start', pair_id, husband_id: pair.husband_id, wife_id: pair.wife_id })
-    const w = await getRules()
-    const m = w.macro_obj
-    const patri = pair.patri_path_count || 0
-    const sameLin = !!pair.same_lineage
-    const era = pair.era || 'regular'
-    const eraScore = { regular: 0.4, catchup: 0, late: 0.2 }[era] ?? 0
-    const agents = [
-      { agent: 'paternal-prior',   score: m.paternal_lineage * (0.6 * patri) - 1.0, note: 'patrilineal scaffold; +0.6 logit per visible 2-hop path' },
-      { agent: 'sibling-overlap',  score: m.sibling_overlap  * (patri >= 2 ? 0.35 : 0), note: 'shared siblings via father-of-husband' },
-      { agent: 'household-share',  score: m.household_share  * (patri >= 3 ? 0.45 : 0), note: 'pre-marriage co-residence' },
-      { agent: 'banner-match',     score: m.banner_match     * 0.3, note: 'same banner endogamy bonus' },
-      { agent: 'macro-temporal',   score: m.macro_era        * eraScore, note: `cohort era = ${era}` },
-      { agent: 'endogamy-veto',    score: sameLin ? -2.0 : 0,   note: sameLin ? 'same-lineage = strict veto' : 'cross-lineage ok' },
-    ]
-    for (const a of agents) {
-      await new Promise(r => setTimeout(r, 280))
-      onEvent && onEvent({ event: 'agent', ...a })
-    }
-    await new Promise(r => setTimeout(r, 200))
-    onEvent && onEvent({
-      event: 'final',
-      final_score: pair.score,
-      score_gap: pair.score_gap,
-      accept: pair.hungarian_correct === true || (pair.score > 0 && pair.hungarian_correct == null),
-      hungarian_correct: pair.hungarian_correct,
-    })
-    onDone && onDone()
-  } catch (e) {
-    onError && onError(e)
-  }
+export function openNegotiationStream(husband_id) {
+  const wsProto = location.protocol === 'https:' ? 'wss' : 'ws'
+  return new WebSocket(`${wsProto}://${location.host}/api/negotiate/${encodeURIComponent(husband_id)}/stream`)
+}
+
+export async function sendNegotiationHint(husband_id, text, role = 'all') {
+  const r = await http.post(`/negotiate/${encodeURIComponent(husband_id)}/hint`, { text, role })
+  return r.data
+}
+
+export async function overrideMatch(husband_id, wife_id, score, note) {
+  const r = await http.post(`/negotiate/${encodeURIComponent(husband_id)}/override`, {
+    wife_id, score, note,
+  })
+  return r.data
+}
+
+export async function getLLMConfig() {
+  try { const r = await http.get('/llm_config'); return r.data }
+  catch { return { use_llm: false, model: 'qwen-plus-2025-04-28', api_key_set: false } }
+}
+
+export async function setLLMConfig({ api_key = null, model = null } = {}) {
+  const r = await http.post('/llm_config', { api_key, model })
+  return r.data
 }
 
 /** SHAP-style waterfall — heuristic decomposition of the pair's logit. */
