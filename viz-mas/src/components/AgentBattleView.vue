@@ -226,6 +226,15 @@ function onHexSelect(payload) {
   loadHusband(husbandIds[0])
 }
 
+// V4 (BipartiteDetailView) and V2 (ProcessedPairsView) emit `person-selected`
+// when the user clicks a husband node. Route directly into loadHusband so V5
+// populates without requiring a V3 hex click first.
+function onPersonSelected(payload) {
+  if (payload?.role === 'husband' && payload?.id != null) {
+    loadHusband(payload.id)
+  }
+}
+
 async function loadHusband(id) {
   // New target → kill any in-flight stream and reset the running gate so
   // the ▶ arena button isn't stuck disabled if the previous WS died
@@ -555,9 +564,13 @@ watch(() => `${appState.year}|${appState.ablation}`, () => {
   closeWS()
 })
 
-onMounted(() => bus.on('hex-select', onHexSelect))
+onMounted(() => {
+  bus.on('hex-select', onHexSelect)
+  bus.on('person-selected', onPersonSelected)
+})
 onUnmounted(() => {
   bus.off('hex-select', onHexSelect)
+  bus.off('person-selected', onPersonSelected)
   closeWS()
 })
 </script>
