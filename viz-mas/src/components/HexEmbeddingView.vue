@@ -3,25 +3,19 @@
     <div class="panel-head">
       <span>V3 · Relation Embedding Space</span>
       <span class="legend-row">
-        <!-- Honeycomb-mode legend uses the diverging score-gap palette
-             from viz/js/honeycomb_render.js (red → cream → green) so the
-             rendered hexes match the canonical viewer exactly. -->
-        <template v-if="mode === 'honeycomb'">
-          <span class="score-legend tiny">
-            <span class="lbl">score gap</span>
-            <span class="tick">−1</span>
-            <span class="ramp gap-ramp"></span>
-            <span class="tick">+1</span>
-          </span>
-        </template>
-        <template v-else>
-          <span class="score-legend tiny">
-            <span class="lbl">HGT score</span>
-            <span class="tick">0</span>
-            <span class="ramp hgt-ramp"></span>
-            <span class="tick">1</span>
-          </span>
-        </template>
+        <!-- Both modes share the diverging score-gap palette (red → cream
+             → green) and the same canonical packing, so one legend covers
+             both. -->
+        <span class="score-legend tiny">
+          <span class="lbl">score gap</span>
+          <span class="tick">−1</span>
+          <span class="ramp gap-ramp"></span>
+          <span class="tick">+1</span>
+        </span>
+        <span class="score-legend tiny" title="Background heatmap = training-cohort density">
+          <span class="lbl">train ref</span>
+          <span class="ramp ref-ramp"></span>
+        </span>
       </span>
       <span class="tiny muted">{{ hint }}</span>
       <button class="mode-btn" @click="cycleMode" :title="`mode: ${mode}`">
@@ -104,9 +98,7 @@ function toggleLasso() {
 
 const topK = ref(3)
 
-const STROKE_REST = '#6d6458'
-const STROKE_SELECT = '#d46a3b'
-const clusterPalette = d3.schemeSet2
+// (stroke palette inlined where used; clusterPalette removed with X-means)
 
 let data = null
 let selected = ref(null)
@@ -133,39 +125,129 @@ function redraw() { draw() }
 // ──────────────────────────────────────────────────────────────────────
 // Mode dispatch
 // ──────────────────────────────────────────────────────────────────────
+//
+// Both modes share the same coordinate system. The canonical packing
+// algorithm (`buildHoneycomb`) normalizes `mds_coords` to [0,1]² internally
+// using the cohort's own min/max, so for the heatmap to align we must
+// pre-normalize `train_ref_coords` with the same min/max.
+function buildSharedLayout() {
+  // Run the canonical packing once. Both modes consume `cells` for cell-
+  // assignment lookup.
+  const layout = buildHoneycomb({
+    pairs: data.pairs,
+    mds_coords: data.mds_coords,
+    clusters: data.clusters,
+    k_clusters: data.k_clusters,
+  })
+  // Compute the same min/max the canonical algorithm used so we can
+  // normalize the training-reference coords into the same [0,1]² space.
+  let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity
+  for (const c of data.mds_coords) {
+    if (c[0] < xMin) xMin = c[0]; if (c[0] > xMax) xMax = c[0]
+    if (c[1] < yMin) yMin = c[1]; if (c[1] > yMax) yMax = c[1]
+  }
+  const xRange = (xMax - xMin) || 1
+  const yRange = (yMax - yMin) || 1
+  const refRaw = data.train_ref_coords || []
+  const refNorm = refRaw.map(([x, y]) => [
+    (x - xMin) / xRange,
+    (y - yMin) / yRange,
+  ])
+  return { layout, refNorm }
+}
+
 function draw() {
   if (!svgRef.value || !wrapRef.value || !data) return
   const wrap = wrapRef.value.getBoundingClientRect()
   const W = wrap.width, H = wrap.height
   if (W === 0 || H === 0) return
   const svg = svgRef.value
-  // Clear and reset basic attrs; the canonical renderer will rewrite for
-  // honeycomb mode, the d3 path below for scatter mode.
   while (svg.firstChild) svg.removeChild(svg.firstChild)
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`)
-  if (mode.value === 'honeycomb') drawHoneycomb(W, H)
-  else drawScatter(W, H)
+
+  const { layout, refNorm } = buildSharedLayout()
+
+  // 1) Foreground (mode-specific). Honeycomb mode internally clears the
+  //    SVG, so we have to render it BEFORE the heatmap, then prepend the
+  //    heatmap layer to put it visually behind everything else.
+  if (mode.value === 'honeycomb') drawHoneycomb(svg, layout, W, H)
+  else drawScatter(svg, layout, W, H)
+
+  // 2) Heatmap layer — appended then re-positioned to the bottom of the
+  //    SVG child list so it sits behind cells / dots / cluster borders.
+  drawTrainRefHeatmap(svg, refNorm, W, H)
+  const heatmap = svg.querySelector('.train-ref-heatmap')
+  if (heatmap && svg.firstChild && svg.firstChild !== heatmap) {
+    svg.insertBefore(heatmap, svg.firstChild)
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────
 // Honeycomb mode — wraps the canonical algorithm
 // ──────────────────────────────────────────────────────────────────────
-function drawHoneycomb(W, H) {
-  const svg = svgRef.value
-  // The canonical renderer wants the full cohort JSON shape.
-  // Build a layout once per (year, ablation) — algorithm has no top-K.
-  const cohortLike = {
-    pairs: data.pairs,
-    mds_coords: data.mds_coords,
-    clusters: data.clusters,
-    k_clusters: data.k_clusters,
+// Shared coordinate transform — must match the canonical renderer
+// (honeycomb_render.js) so all three layers (heatmap, scatter dots, hex
+// cells) live in the same pixel space. The renderer uses
+//   scale = min(innerW, innerH); offsetX = marginPx + (innerW - scale)/2;
+//   offsetY = marginPx + (innerH - scale)/2;
+// ...so layout coords in [0,1]² → a square inscribed in the SVG.
+const MARGIN_PX = 40
+function pxTransform(W, H) {
+  const innerW = W - 2 * MARGIN_PX
+  const innerH = H - 2 * MARGIN_PX
+  const scale = Math.min(innerW, innerH)
+  const offsetX = MARGIN_PX + (innerW - scale) / 2
+  const offsetY = MARGIN_PX + (innerH - scale) / 2
+  return {
+    x: (cx) => offsetX + cx * scale,
+    y: (cy) => offsetY + cy * scale,
+    scale,
+    offsetX,
+    offsetY,
   }
-  const layout = buildHoneycomb(cohortLike)
-  const opts = { width: W, height: H, marginPx: 40 }
+}
+
+// Heatmap of training-reference relations — drawn first so cells/dots
+// overlay on top. Empty when train_ref_coords is missing or empty.
+function drawTrainRefHeatmap(svg, refNorm, W, H) {
+  if (!refNorm || refNorm.length < 5) return
+  const t = pxTransform(W, H)
+  const screen = refNorm.map(([cx, cy]) => [t.x(cx), t.y(cy)])
+  const innerW = W - 2 * MARGIN_PX
+  const innerH = H - 2 * MARGIN_PX
+  const contours = d3.contourDensity()
+    .x(p => p[0]).y(p => p[1])
+    .size([W, H])
+    .bandwidth(20)
+    .thresholds(8)(screen)
+  const cMax = d3.max(contours, c => c.value) || 1
+  // Cool sand → warm amber so the layer reads as background but still
+  // signals where the training-cohort density is concentrated.
+  const cScale = d3.scaleSequential(
+    d3.interpolateRgb('#f1ecdf', '#d4a85d')
+  ).domain([0, cMax])
+  const g = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+  g.setAttribute('class', 'train-ref-heatmap')
+  const path = d3.geoPath()
+  for (const c of contours) {
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    p.setAttribute('d', path(c) || '')
+    p.setAttribute('fill', cScale(c.value))
+    p.setAttribute('fill-opacity', '0.45')
+    p.setAttribute('stroke', '#b89656')
+    p.setAttribute('stroke-width', '0.3')
+    p.setAttribute('stroke-opacity', '0.55')
+    g.appendChild(p)
+  }
+  svg.appendChild(g)
+}
+
+// Honeycomb mode — defers entirely to the canonical renderer.
+function drawHoneycomb(svg, layout, W, H) {
+  const opts = { width: W, height: H, marginPx: MARGIN_PX }
   renderHoneycomb(svg, layout, opts)
-  // Listeners are attached once in onMounted (see below) — re-binding here
-  // would leak handlers on every draw and fire bus events 2×, 3×, … per
-  // click as the user pans through cohorts.
+  // Listeners attached once in onMounted; canonical SVG dispatches
+  // cell-clicked / cell-hovered with the full cell record.
 }
 
 function onCanonicalCellClick(ev) {
@@ -188,139 +270,126 @@ function onCanonicalCellHover(_ev) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Scatter mode — preserves the ASight pipeline + lasso
+// Scatter mode — same canonical packing as honeycomb (one position per
+// pair, derived from `layout.cells[k].pairIds`), just rendered as dots
+// instead of an aggregated hex glyph. Multi-pair cells get an
+// in-hex-radius jitter so dots don't perfectly stack.
 // ──────────────────────────────────────────────────────────────────────
-function shapeActivePoints() {
-  if (!data || !data.pairs?.length) return []
-  const xs = data.mds_coords.map(c => c[0])
-  const ys = data.mds_coords.map(c => c[1])
-  const xMin = d3.min(xs), xMax = d3.max(xs)
-  const yMin = d3.min(ys), yMax = d3.max(ys)
-  const xSpan = (xMax - xMin) || 1
-  const ySpan = (yMax - yMin) || 1
-  const pts = data.pairs.map((p, i) => {
-    const [mx, my] = data.mds_coords[i] || [0, 0]
-    return {
-      id: p.id,
-      x: (mx - xMin) / xSpan,
-      y: (my - yMin) / ySpan,
-      score: 1 / (1 + Math.exp(-p.score)),
-      raw_score: p.score,
-      score_gap: p.score_gap,
-      pair_type: p.label === 1 ? 'gt' : 'pred',
-      label: p.label,
-      hungarian_correct: p.hungarian_correct,
-      male_idx: p.husband_id,
-      female_idx: p.wife_id,
-      same_lineage: p.same_lineage,
-      era: p.era,
-      patri_path_count: p.patri_path_count,
-      cluster: data.clusters?.[i],
+function _hashJitter(seed, idx, scale = 0.6) {
+  // Tiny deterministic in-cell jitter so reloads don't reshuffle dots.
+  // Two coprime LCG-style steps on (seed, idx).
+  const a = ((seed * 1103515245 + idx * 12345) >>> 0) / 0xffffffff
+  const b = ((seed * 1664525 + idx * 1013904223) >>> 0) / 0xffffffff
+  const ang = a * Math.PI * 2
+  const r = Math.sqrt(b) * scale       // sqrt for area-uniform jitter
+  return [Math.cos(ang) * r, Math.sin(ang) * r]
+}
+
+function shapeCellScatter(layout) {
+  // For each populated cell, emit one point per pair at the cell's
+  // canonical centroid + small in-hex jitter. Top-K filter applies per
+  // husband AFTER cell assignment so we keep the alignment honest.
+  const out = []
+  const cells = layout?.cells || []
+  for (const cell of cells) {
+    const ids = cell.pairIds || []
+    if (!ids.length) continue
+    let i = 0
+    for (const pid of ids) {
+      const p = data.pairs[pid]
+      if (!p) { i++; continue }
+      if (acceptedSet.value.has(`${p.husband_id}|${p.wife_id}`)) { i++; continue }
+      // Jitter scale = 0.6 of the hex radius (cluster_layout default 0.04).
+      const [jx, jy] = ids.length > 1
+        ? _hashJitter(cell.id, i, (layout.meta?.hexRadius ?? 0.04) * 0.6)
+        : [0, 0]
+      out.push({
+        id: pid,
+        cellId: cell.id,
+        x: cell.cx + jx,
+        y: cell.cy + jy,
+        score_gap: p.score_gap,
+        raw_score: p.score,
+        score: 1 / (1 + Math.exp(-p.score)),
+        label: p.label,
+        pair_type: p.label === 1 ? 'gt' : 'pred',
+        hungarian_correct: p.hungarian_correct,
+        male_idx: p.husband_id,
+        female_idx: p.wife_id,
+        same_lineage: p.same_lineage,
+        era: p.era,
+        patri_path_count: p.patri_path_count,
+        cluster: cell.cluster,
+      })
+      i++
     }
-  })
-  const filtered = pts.filter(p => !acceptedSet.value.has(`${p.male_idx}|${p.female_idx}`))
-  if (topK.value >= filtered.length) return filtered
+  }
+  // Top-K per husband, by raw score.
+  if (topK.value >= out.length) return out
   const byMale = new Map()
-  for (const p of filtered) {
+  for (const p of out) {
     if (!byMale.has(p.male_idx)) byMale.set(p.male_idx, [])
     byMale.get(p.male_idx).push(p)
   }
-  const out = []
+  const trimmed = []
   for (const arr of byMale.values()) {
     arr.sort((a, b) => b.raw_score - a.raw_score)
-    out.push(...arr.slice(0, topK.value))
+    trimmed.push(...arr.slice(0, topK.value))
   }
-  return out
+  return trimmed
 }
 
-function drawScatter(W, H) {
-  const pad = 14
-  const innerW = W - pad * 2
-  const innerH = H - pad * 2
-  const x = d3.scaleLinear().domain([0, 1]).range([0, innerW])
-  const y = d3.scaleLinear().domain([0, 1]).range([innerH, 0])
-  const svg = d3.select(svgRef.value)
-  const root = svg.append('g').attr('transform', `translate(${pad},${pad})`)
-  const activePoints = shapeActivePoints()
-
-  const fillScale = d3.scaleSequential(
-    d3.interpolateRgbBasis(['#fff7d6','#f5c04e','#e07b3a','#9d2466','#2a1a6b'])
-  ).domain([0, 1])
-
-  // Density contour
-  const screenPts = activePoints.map(p => [x(p.x), y(p.y)])
-  if (screenPts.length > 0) {
-    const contours = d3.contourDensity()
-      .x(d => d[0]).y(d => d[1])
-      .size([innerW, innerH])
-      .bandwidth(22).thresholds(10)(screenPts)
-    const cScale = d3.scaleSequential(d3.interpolate('#f3ecdf', '#3a3d42'))
-      .domain([0, d3.max(contours, c => c.value) || 1])
-    root.append('g').attr('class', 'contour')
-      .selectAll('path').data(contours).enter().append('path')
-      .attr('d', d3.geoPath())
-      .attr('fill', d => cScale(d.value)).attr('fill-opacity', 0.55)
-      .attr('stroke', '#8b8378').attr('stroke-width', 0.35)
+// Diverging score-gap palette — same anchors as honeycomb_render.js.
+function gapColor(g) {
+  // Clamp to [-1, +1] for the linear interpolation.
+  const v = Math.max(-1, Math.min(1, g ?? 0))
+  if (v <= 0) {
+    // -1..0  →  #993c1d → #f5f1e8
+    return d3.interpolateRgb('#993c1d', '#f5f1e8')(v + 1)
   }
+  // 0..+1  →  #f5f1e8 → #0f6e56
+  return d3.interpolateRgb('#f5f1e8', '#0f6e56')(v)
+}
 
-  // X-means hulls
-  if (screenPts.length >= 4) {
-    const best = pickKByBic(screenPts, 2,
-      Math.min(8, Math.max(2, Math.floor(screenPts.length / 30))))
-    if (best) {
-      const hulls = clusterHulls(screenPts, best.labels, best.k)
-      const hullG = root.append('g').attr('class', 'hulls')
-      hullG.selectAll('path').data(hulls).enter().append('path')
-        .attr('d', d => `M${d.hull.map(p => p.join(',')).join('L')}Z`)
-        .attr('fill', d => clusterPalette[d.c % clusterPalette.length])
-        .attr('fill-opacity', 0.18)
-        .attr('stroke', d => clusterPalette[d.c % clusterPalette.length])
-        .attr('stroke-width', 1.4)
-        .attr('stroke-dasharray', '3 2')
-      hullG.selectAll('text').data(hulls).enter().append('text')
-        .attr('x', d => d3.polygonCentroid(d.hull)[0])
-        .attr('y', d => d3.polygonCentroid(d.hull)[1])
-        .attr('text-anchor', 'middle')
-        .attr('font-size', 11).attr('font-weight', 700)
-        .attr('fill', d => d3.color(clusterPalette[d.c % clusterPalette.length]).darker(1.2))
-        .text(d => `k${d.c + 1}`)
-    }
-  }
-
-  // Scatter dots
-  const g = root.append('g').attr('class', 'scatter')
-  g.selectAll('circle').data(activePoints).enter().append('circle')
-    .attr('cx', p => x(p.x)).attr('cy', p => y(p.y))
-    .attr('r', p => p.pair_type === 'pred' ? 2.6 : 3.4)
-    .attr('fill', p => fillScale(p.score))
-    .attr('stroke', STROKE_REST)
+function drawScatter(svg, layout, W, H) {
+  const t = pxTransform(W, H)
+  const points = shapeCellScatter(layout)
+  // Use a top-level <g> in the same coordinate system as the canonical
+  // renderer so the lasso, dots, and (later-prepended) heatmap all line up.
+  const root = d3.select(svg).append('g').attr('class', 'scatter')
+  root.selectAll('circle').data(points).enter().append('circle')
+    .attr('cx', p => t.x(p.x)).attr('cy', p => t.y(p.y))
+    .attr('r', p => p.pair_type === 'pred' ? 2.4 : 3.2)
+    .attr('fill', p => gapColor(p.score_gap))
+    .attr('stroke', '#6d6458')
     .attr('stroke-width', p => p.pair_type === 'pred' ? 0.3 : 0.5)
     .attr('stroke-dasharray', p => p.pair_type === 'pred' ? '1.5 1.5' : null)
-    .attr('fill-opacity', p => p.pair_type === 'pred' ? 0.75 : 1.0)
+    .attr('fill-opacity', p => p.pair_type === 'pred' ? 0.78 : 1.0)
     .style('cursor', 'pointer')
     .on('click', (event, p) => {
       event.stopPropagation()
-      g.selectAll('circle')
-        .attr('stroke', STROKE_REST)
+      root.selectAll('circle').attr('stroke', '#6d6458')
         .attr('stroke-width', d => d.pair_type === 'pred' ? 0.3 : 0.5)
-      d3.select(event.currentTarget).attr('stroke', STROKE_SELECT).attr('stroke-width', 2.0)
+      d3.select(event.currentTarget).attr('stroke', '#d46a3b').attr('stroke-width', 2.0)
       bus.emit('hex-select', {
         binKey: `pt:${p.male_idx}-${p.female_idx}`,
         pairs: [pairPayload(data.pairs[p.id], p.id)],
       })
     })
 
-  if (lassoOn.value) attachLasso(root, innerW, innerH, activePoints, x, y)
+  if (lassoOn.value) attachLasso(root, t, W, H, points)
 }
 
-function attachLasso(root, innerW, innerH, activePoints, x, y) {
+function attachLasso(root, t, W, H, points) {
+  // Brush operates in pixel coordinates over the full SVG; we filter
+  // points by their pixel position via the same `t` transform.
   const brush = d3.brush()
-    .extent([[0, 0], [innerW, innerH]])
+    .extent([[0, 0], [W, H]])
     .on('end', (event) => {
       if (!event.selection) return
       const [[x0, y0], [x1, y1]] = event.selection
-      const picked = activePoints.filter(p => {
-        const sx = x(p.x), sy = y(p.y)
+      const picked = points.filter(p => {
+        const sx = t.x(p.x), sy = t.y(p.y)
         return sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1
       })
       if (!picked.length) return
@@ -335,97 +404,15 @@ function attachLasso(root, innerW, innerH, activePoints, x, y) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// X-means utilities (used in scatter mode only — honeycomb mode uses
-// the cluster ids that `cluster_layout.js` reads from cohort.clusters).
-// ──────────────────────────────────────────────────────────────────────
-function kmeansPP(pts, k, rng = Math.random) {
-  const n = pts.length
-  if (n === 0) return { centers: [], labels: [] }
-  const centers = [pts[Math.floor(rng() * n)].slice()]
-  while (centers.length < k) {
-    const d2 = pts.map(p => {
-      let best = Infinity
-      for (const c of centers) {
-        const dx = p[0] - c[0], dy = p[1] - c[1]
-        const d = dx*dx + dy*dy
-        if (d < best) best = d
-      }
-      return best
-    })
-    const sum = d2.reduce((a, b) => a + b, 0)
-    let r = rng() * sum, idx = 0
-    for (; idx < n; idx++) { r -= d2[idx]; if (r <= 0) break }
-    centers.push(pts[Math.min(idx, n - 1)].slice())
-  }
-  return runKmeans(pts, centers)
-}
-function runKmeans(pts, centers, maxIter = 40) {
-  const n = pts.length, k = centers.length
-  const labels = new Array(n).fill(0)
-  for (let it = 0; it < maxIter; it++) {
-    let changed = false
-    for (let i = 0; i < n; i++) {
-      let best = 0, bd = Infinity
-      for (let j = 0; j < k; j++) {
-        const dx = pts[i][0] - centers[j][0], dy = pts[i][1] - centers[j][1]
-        const d = dx*dx + dy*dy
-        if (d < bd) { bd = d; best = j }
-      }
-      if (labels[i] !== best) { labels[i] = best; changed = true }
-    }
-    const sums = Array.from({ length: k }, () => [0, 0, 0])
-    for (let i = 0; i < n; i++) {
-      const L = labels[i]
-      sums[L][0] += pts[i][0]; sums[L][1] += pts[i][1]; sums[L][2] += 1
-    }
-    for (let j = 0; j < k; j++) {
-      if (sums[j][2] > 0) {
-        centers[j][0] = sums[j][0] / sums[j][2]
-        centers[j][1] = sums[j][1] / sums[j][2]
-      }
-    }
-    if (!changed) break
-  }
-  return { centers, labels }
-}
-function wss(pts, labels, centers) {
-  let s = 0
-  for (let i = 0; i < pts.length; i++) {
-    const c = centers[labels[i]]
-    const dx = pts[i][0] - c[0], dy = pts[i][1] - c[1]
-    s += dx*dx + dy*dy
-  }
-  return s
-}
-function pickKByBic(pts, kMin = 2, kMax = 8) {
-  let best = null
-  const n = pts.length
-  for (let k = kMin; k <= kMax; k++) {
-    if (k >= n) break
-    const { centers, labels } = kmeansPP(pts, k)
-    const w = wss(pts, labels, centers)
-    const sigma2 = w / Math.max(1, n - k)
-    const L = -n / 2 * Math.log(2 * Math.PI * sigma2 + 1e-12) - w / (2 * sigma2 + 1e-12)
-    const p = k * 2 + k
-    const bic = -2 * L + p * Math.log(n)
-    if (!best || bic < best.bic) best = { bic, k, centers, labels }
-  }
-  return best
-}
-function clusterHulls(pts, labels, k) {
-  const hulls = []
-  for (let c = 0; c < k; c++) {
-    const grp = pts.filter((_, i) => labels[i] === c)
-    if (grp.length < 3) continue
-    const hull = d3.polygonHull(grp)
-    if (hull) hulls.push({ c, hull })
-  }
-  return hulls
-}
-
-// ──────────────────────────────────────────────────────────────────────
 // Shared helpers
 // ──────────────────────────────────────────────────────────────────────
+//
+// Note: the on-the-fly X-means / convex hulls used in the previous scatter
+// implementation are gone. Both modes now use the canonical packing's
+// cluster assignment (cohort.clusters), which is what `cluster_layout.js`
+// reads to colour cells and route cluster borders. Keeping a second
+// clustering on top would be redundant and would drift away from the
+// honeycomb mode's borders, breaking the visual alignment.
 function pairPayload(p, idx) {
   if (!p) return null
   return {
@@ -518,9 +505,9 @@ onUnmounted(() => {
     .ramp.gap-ramp {
       background: linear-gradient(to right, #993c1d 0%, #f5f1e8 50%, #0f6e56 100%);
     }
-    .ramp.hgt-ramp {
-      background: linear-gradient(to right,
-        #fff7d6 0%, #f5c04e 25%, #e07b3a 50%, #9d2466 75%, #2a1a6b 100%);
+    .ramp.ref-ramp {
+      width: 36px;
+      background: linear-gradient(to right, #f1ecdf 0%, #d4a85d 100%);
     }
     .tick { font-size: 9px; color: #888; font-variant-numeric: tabular-nums; }
   }

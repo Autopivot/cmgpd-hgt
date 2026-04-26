@@ -60,6 +60,14 @@ DEFAULT_TARGET_YEARS = [1882, 1885, 1888]  # the 3 acceptance-required years
 MAX_PAIRS_PER_COHORT = 6000
 NEGATIVES_PER_HUSBAND = 5
 PCA_COMPONENTS = 50
+
+# Training-reference background heatmap. We sample TRAIN_REF_SAMPLE positive
+# (husband, wife) pairs from the train bucket, push their HGT embeddings
+# through the same scorer-projection head used for the test pairs, and fit
+# PCA + MDS jointly on (test ∪ train_ref). This yields a single 2-D
+# embedding space the frontend can use to overlay the training distribution
+# as a density heatmap behind the cohort points / hex cells.
+TRAIN_REF_SAMPLE = 1000
 DEFAULT_K_MAX = 10
 
 OUT_DIR = Path(__file__).resolve().parent
@@ -517,33 +525,68 @@ def precompute_real(year: int, ablated: bool, device: str | None = None) -> dict
     # Project the 4H input through the scorer's first linear+GELU to get z (H-dim).
     z_in = np.stack(z_input_per_pair, axis=0).astype(np.float32)
     log.info("projecting %d pairs through scorer.mlp[0:2] -> H=%d", len(z_in), H_dim)
+    first_lin = scorer.mlp[0]
+    first_act = scorer.mlp[1]
     with torch.no_grad():
-        # scorer.mlp[0] is Linear(4H, H), scorer.mlp[1] is GELU.
         z_t = torch.from_numpy(z_in).to(device)
-        first_lin = scorer.mlp[0]
-        first_act = scorer.mlp[1]
         z_proj = first_act(first_lin(z_t)).detach().cpu().numpy()
 
-    # Z-score across all pairs for this cohort, then PCA(50), then MDS(2).
-    log.info("PCA -> MDS")
+    # ── Training-reference embedding (joint MDS background) ────────────
+    # Sample positive (h, w) pairs from the train bucket and push them
+    # through the same scorer head, using the SAME test-year subgraph
+    # encoding for x_persons. The training pairs share the embedding
+    # space with the test pairs, so the frontend can overlay them as a
+    # density heatmap that aligns with the cohort points/hexes.
+    train_pairs_all: list[tuple[int, int]] = []
+    for plist in split["train"].values():
+        for h, w, _ in plist:
+            train_pairs_all.append((h, w))
+    rng_train = random.Random(42)
+    n_ref = min(TRAIN_REF_SAMPLE, len(train_pairs_all))
+    z_train_proj: np.ndarray
+    if n_ref > 0:
+        train_sample = rng_train.sample(train_pairs_all, n_ref)
+        ref_h_idx = [h for h, _ in train_sample]
+        ref_w_idx = [w for _, w in train_sample]
+        with torch.no_grad():
+            h_m_ref = x_persons[torch.tensor(ref_h_idx, device=device)]
+            h_w_ref = x_persons[torch.tensor(ref_w_idx, device=device)]
+            z4_ref = torch.cat(
+                [h_m_ref, h_w_ref, (h_m_ref - h_w_ref).abs(), h_m_ref * h_w_ref],
+                dim=-1,
+            ).cpu().numpy().astype(np.float32)
+            z_t_ref = torch.from_numpy(z4_ref).to(device)
+            z_train_proj = first_act(first_lin(z_t_ref)).detach().cpu().numpy()
+        log.info("train reference: %d pairs projected through scorer head", n_ref)
+    else:
+        z_train_proj = np.zeros((0, z_proj.shape[1]), dtype=np.float32)
+
+    # Joint PCA + MDS on (test pairs ∪ train reference). This yields a
+    # single shared 2-D embedding so the heatmap and the cohort glyphs
+    # use the same coordinate system.
+    log.info("joint PCA -> MDS over %d test + %d train pairs",
+             z_proj.shape[0], z_train_proj.shape[0])
+    z_all = np.concatenate([z_proj, z_train_proj], axis=0)
     scaler = StandardScaler()
-    z_norm = scaler.fit_transform(z_proj)
-    n_components = min(PCA_COMPONENTS, z_norm.shape[0], z_norm.shape[1])
+    z_norm_all = scaler.fit_transform(z_all)
+    n_components = min(PCA_COMPONENTS, z_norm_all.shape[0], z_norm_all.shape[1])
     pca = PCA(n_components=n_components, random_state=0)
-    z_pca = pca.fit_transform(z_norm)
-    # MDS step. Use precomputed dissimilarities and explicitly symmetrize
-    # them — sklearn 1.8+ MDS raises "Array must be symmetric" when the
-    # internal euclidean computation leaves D[i,j] != D[j,i] by even a few
-    # ULPs (observed on several catch-up/late cohorts in this dataset).
+    z_pca_all = pca.fit_transform(z_norm_all)
     from scipy.spatial.distance import pdist, squareform
-    diss = squareform(pdist(z_pca, metric="euclidean"))
+    diss = squareform(pdist(z_pca_all, metric="euclidean"))
     diss = (diss + diss.T) * 0.5  # exact symmetric
     np.fill_diagonal(diss, 0.0)
     mds = MDS(n_components=2, n_init=1, max_iter=200,
               dissimilarity="precomputed",
               random_state=0, normalized_stress="auto")
-    mds_coords = mds.fit_transform(diss)
+    mds_coords_all = mds.fit_transform(diss)
+    n_test = z_proj.shape[0]
+    mds_coords = mds_coords_all[:n_test]
+    train_ref_coords = mds_coords_all[n_test:]
 
+    # Cluster labels are still scoped to the test pairs only — the heatmap
+    # is purely background context, not a cluster member.
+    z_pca = z_pca_all[:n_test]
     cluster_labels, k_clusters = _run_xmeans_or_kmeans(z_pca, DEFAULT_K_MAX)
 
     # Lineage lookup (uses the original graph, not the time-restricted subgraph).
@@ -646,6 +689,7 @@ def precompute_real(year: int, ablated: bool, device: str | None = None) -> dict
     # mds_coords aligned to pairs by id.
     mds_list = [[float(round(c[0], 4)), float(round(c[1], 4))] for c in mds_coords]
     cluster_list = [int(c) for c in cluster_labels]
+    train_ref_list = [[float(round(c[0], 4)), float(round(c[1], 4))] for c in train_ref_coords]
 
     return {
         "year": int(year),
@@ -655,6 +699,11 @@ def precompute_real(year: int, ablated: bool, device: str | None = None) -> dict
         "clusters": cluster_list,
         "k_clusters": int(k_clusters),
         "ablation": "ablated" if ablated else "unablated",
+        # Training-cohort positives projected through the same scorer head
+        # and embedded in the SAME joint MDS space as `mds_coords`. The
+        # frontend overlays these as a density heatmap behind the points.
+        "train_ref_coords": train_ref_list,
+        "train_ref_n": len(train_ref_list),
     }
 
 
@@ -733,6 +782,18 @@ def precompute_stub(year: int, ablated: bool, n_pairs: int = 250,
             "z": [round(float(v), 4) for v in z[i].tolist()],
         })
 
+    # Stub training-reference cloud: same MDS span as the cohort, sampled
+    # from a couple of broad gaussians so the heatmap looks plausible.
+    n_ref_stub = min(TRAIN_REF_SAMPLE, 600)
+    centers_stub = rng.uniform(-1.0, 2.0, size=(3, 2))
+    train_ref_coords_stub = []
+    for _ in range(n_ref_stub):
+        c = centers_stub[rng.integers(0, 3)]
+        train_ref_coords_stub.append([
+            float(round(c[0] + rng.normal(0, 0.4), 4)),
+            float(round(c[1] + rng.normal(0, 0.4), 4)),
+        ])
+
     return {
         "year": int(year),
         "n_pairs": int(n_pairs),
@@ -741,6 +802,8 @@ def precompute_stub(year: int, ablated: bool, n_pairs: int = 250,
         "clusters": [int(c) for c in cluster_assignments],
         "k_clusters": int(n_clusters),
         "ablation": "ablated" if ablated else "unablated",
+        "train_ref_coords": train_ref_coords_stub,
+        "train_ref_n": len(train_ref_coords_stub),
     }
 
 

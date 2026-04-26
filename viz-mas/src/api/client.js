@@ -123,6 +123,12 @@ export async function getEmbedding({ year, ablation = 'ablated' } = {}) {
     mds_coords: c.mds_coords,
     clusters: c.clusters,
     pairs: c.pairs,  // full list — caller computes whatever per-cell aggregates it needs
+    // Training-cohort positives projected through the same scorer head and
+    // jointly MDS'd with the cohort's pairs (precompute.py since the
+    // joint-MDS patch). V3 normalizes these into the canonical [0,1]² space
+    // and renders them as a density heatmap behind the cells/dots.
+    train_ref_coords: c.train_ref_coords || [],
+    train_ref_n: c.train_ref_n || 0,
   }
 }
 
