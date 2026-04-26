@@ -22,22 +22,48 @@ when the user clicks "Approve & Advance". Hints arrive through an
 emits a ``hint_ack`` frame and is appended to per-actor system context
 for the next round's prompt.
 
-Real Qwen calls are reused from ``agent.py``; the stub backend is the
-default when ``DASHSCOPE_API_KEY`` is unset, producing deterministic
-personas/queries/answers so the V5 UI works offline.
+Round 1 personas, the husband's per-round queries, and each candidate's
+per-round answers are produced by ``llm_helpers.chat_json`` against the
+prompt templates in ``server/mas/prompts/*.txt``. When the API key is
+unset (``is_llm_available() == False``) or any individual call fails
+(parse error, API error, missing keys), the orchestrator falls back to
+the deterministic heuristics preserved below — so dev mode without a
+key still produces all six rounds and the same protocol frames.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import math
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .agent import get_agent
 from .profiles import get_profile
 from .state import state
+
+# Sibling units 1/2/3 land in parallel; degrade independently so that e.g.
+# Unit 1 landing alone still gives heuristic personas access to real events.
+try:
+    from server.data.events_loader import (
+        load_events, load_income, get_birth_year,
+    )
+    _EVENTS_LOADER_AVAILABLE = True
+except ImportError:
+    _EVENTS_LOADER_AVAILABLE = False
+
+try:
+    from server.mas.llm_helpers import (
+        chat_json, render_prompt, events_block, income_block, is_llm_available,
+    )
+    _LLM_HELPERS_AVAILABLE = True
+except ImportError:
+    _LLM_HELPERS_AVAILABLE = False
+
+try:
+    from server.mas.motif_matcher import match_motifs
+    _MOTIF_MATCHER_AVAILABLE = True
+except ImportError:
+    _MOTIF_MATCHER_AVAILABLE = False
 
 log = logging.getLogger(__name__)
 
@@ -88,15 +114,8 @@ def _safe_load_narrative(person_id: str, year: int) -> dict:
     Skipping the load lets round 1 paint immediately and rounds 2-5 still
     run in stub mode.
     """
-    from pathlib import Path
-    cache = Path(__file__).resolve().parents[2].parent / "data" / "processed" / "ds0003" / "ds0003.parquet"
-    if not cache.exists():
-        return {"events": [], "income": [], "birth_year": None}
-    try:
-        from server.data.events_loader import (
-            load_events, load_income, get_birth_year,
-        )
-    except Exception:
+    cache = ROOT.parent / "data" / "processed" / "ds0003" / "ds0003.parquet"
+    if not cache.exists() or not _EVENTS_LOADER_AVAILABLE:
         return {"events": [], "income": [], "birth_year": None}
     try:
         birth = get_birth_year(person_id)
@@ -236,6 +255,227 @@ def _hint_context(hint_log: dict[str, list[str]], for_role: str) -> str:
     return "User guidance: " + " | ".join(bag[-3:])
 
 
+def _hint_block(hint_log: dict[str, list[str]], for_role: str) -> str:
+    """Wrap _hint_context for prompt injection (renders blank when no hints)."""
+    ctx = _hint_context(hint_log, for_role)
+    if not ctx:
+        return ""
+    return f"USER GUIDANCE\n-------------\n{ctx}"
+
+
+def _sex_for_prompt(profile: dict) -> str:
+    """Render sex codes from either CMGPD raw (1/2) or display ('M'/'F') form."""
+    raw = profile.get("sex")
+    if raw in ("M", "m", 2, "2"):
+        return "male"
+    if raw in ("F", "f", 1, "1"):
+        return "female"
+    return "?"
+
+
+def _resume_block(person_id: str, resume: dict) -> str:
+    """Render a resume dict for inclusion in query/answer prompts."""
+    headline = resume.get("headline", "")
+    traits = ", ".join(resume.get("traits") or []) or "—"
+    values = ", ".join(resume.get("values") or []) or "—"
+    flags = ", ".join(resume.get("red_flags") or []) or "—"
+    return (
+        f"id: {person_id}\n"
+        f"headline: {headline}\n"
+        f"traits: {traits}\n"
+        f"values: {values}\n"
+        f"red_flags: {flags}"
+    )
+
+
+def _normalize_score(value: Any, default: float = 5.0) -> float:
+    """Coerce LLM int score (1-10) to a clamped float in [0, 10]."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(10.0, round(v, 2)))
+
+
+def _resume_is_valid(resume: Any) -> bool:
+    """Reject empty / malformed resume dicts so we cleanly fall back."""
+    if not isinstance(resume, dict):
+        return False
+    if not resume.get("headline"):
+        return False
+    # traits/values/red_flags must be present (lists; possibly empty).
+    for k in ("traits", "values", "red_flags"):
+        if k not in resume:
+            return False
+    return True
+
+
+# ── Per-call LLM wrappers (each falls back to heuristic on any failure) ──
+
+
+async def _persona_call(
+    *, person_id: str, role: str, profile: dict, narrative: dict,
+    pre_score: float | None, year: int, ablation: str,
+    hint_log: dict[str, list[str]], hint_role: str,
+) -> dict:
+    """Render persona.txt + chat_json. On any failure return heuristic."""
+    if not _LLM_HELPERS_AVAILABLE or not is_llm_available():
+        return _persona_from_heuristic(profile, narrative, pre_score)
+    try:
+        prompt = render_prompt(
+            "persona",
+            person_id=person_id,
+            role=role,
+            sex=_sex_for_prompt(profile),
+            birth_year=profile.get("birth_year") or narrative.get("birth_year") or "?",
+            banner_id=profile.get("banner_id") if profile.get("banner_id") is not None else "?",
+            community_id=profile.get("community_id") if profile.get("community_id") is not None else "?",
+            household_id=profile.get("household_id") or "?",
+            pre_score=(f"{pre_score:+.3f}" if pre_score is not None else "n/a"),
+            events_block=events_block(narrative.get("events") or []),
+            income_block=income_block(narrative.get("income") or []),
+            year=year,
+            ablation=ablation,
+            hint_block=_hint_block(hint_log, hint_role),
+        )
+        result = await chat_json(
+            messages=[
+                {"role": "system",
+                 "content": "You produce concise persona resumes for historical figures."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+        )
+        if not _resume_is_valid(result):
+            log.warning("persona for %s: invalid resume %r; falling back", person_id, result)
+            return _persona_from_heuristic(profile, narrative, pre_score)
+        # Coerce list fields to actual lists (some models return stringy values).
+        for k in ("traits", "values", "red_flags"):
+            v = result.get(k)
+            if isinstance(v, str):
+                result[k] = [v]
+            elif not isinstance(v, list):
+                result[k] = []
+        return result
+    except Exception as exc:
+        log.warning("persona LLM call failed for %s (%s); using heuristic", person_id, exc)
+        return _persona_from_heuristic(profile, narrative, pre_score)
+
+
+async def _query_call(
+    *, husband_id: str, husband_persona: dict, candidates: list[dict],
+    round_focus: str, hint_log: dict[str, list[str]], round_n: int,
+) -> dict[str, dict]:
+    """Single husband call returning {cid: {score: float, reason: str, query: str}}.
+
+    Heuristic fallback fills any candidate the LLM omitted.
+    """
+    fallback: dict[str, dict] = {}
+    for c in candidates:
+        cid = c["person"]["id"]
+        h_score, h_reason = _score_pair(husband_persona, c["persona"],
+                                        c["pre_score"], round_n)
+        h_query = _question_for_red_flag(c["persona"], round_focus)
+        fallback[cid] = {"score": h_score, "reason": h_reason, "query": h_query}
+
+    if not _LLM_HELPERS_AVAILABLE or not is_llm_available():
+        return fallback
+
+    try:
+        cand_block = "\n\n".join(
+            _resume_block(c["person"]["id"], c["persona"]) for c in candidates
+        )
+        prompt = render_prompt(
+            "query",
+            asker_id=husband_id,
+            asker_role="target",
+            asker_resume=_resume_block(husband_id, husband_persona),
+            round_focus=round_focus,
+            candidate_block=cand_block,
+            hint_block=_hint_block(hint_log, "target"),
+        )
+        result = await chat_json(
+            messages=[
+                {"role": "system",
+                 "content": ("You are roleplaying a Qing-dynasty marriage candidate. "
+                             "Produce JSON exactly matching the requested schema.")},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+        )
+    except Exception as exc:
+        log.warning("query LLM call failed (%s); using heuristic", exc)
+        return fallback
+
+    if not isinstance(result, dict):
+        return fallback
+
+    out = dict(fallback)
+    for entry in result.get("scores") or []:
+        cid = str(entry.get("candidate_id") or "")
+        if cid in out:
+            out[cid] = {
+                **out[cid],
+                "score": _normalize_score(entry.get("score"), out[cid]["score"]),
+                "reason": (entry.get("reason") or out[cid]["reason"])[:500],
+            }
+    for entry in result.get("queries") or []:
+        cid = str(entry.get("candidate_id") or "")
+        if cid in out:
+            text = entry.get("text") or out[cid]["query"]
+            out[cid]["query"] = str(text)[:500]
+    return out
+
+
+async def _answer_call(
+    *, husband_id: str, husband_persona: dict, candidate: dict,
+    question_text: str, round_focus: str, hint_log: dict[str, list[str]],
+    round_n: int,
+) -> dict:
+    """Per-candidate call returning {answer, score, reason}."""
+    cid = candidate["person"]["id"]
+    h_score, h_reason = _score_pair(candidate["persona"], husband_persona,
+                                    candidate["pre_score"], round_n)
+    h_answer = _answer_in_persona(candidate["persona"], question_text)
+    fallback = {"answer": h_answer, "score": h_score, "reason": h_reason}
+
+    if not _LLM_HELPERS_AVAILABLE or not is_llm_available():
+        return fallback
+
+    try:
+        prompt = render_prompt(
+            "answer",
+            answerer_id=cid,
+            answerer_role="candidate",
+            asker_id=husband_id,
+            answerer_resume=_resume_block(cid, candidate["persona"]),
+            asker_resume=_resume_block(husband_id, husband_persona),
+            question_text=question_text,
+            round_focus=round_focus,
+            hint_block=_hint_block(hint_log, f"c-{cid}"),
+        )
+        result = await chat_json(
+            messages=[
+                {"role": "system",
+                 "content": ("You are roleplaying a Qing-dynasty marriage candidate. "
+                             "Produce JSON exactly matching the requested schema.")},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+        )
+    except Exception as exc:
+        log.warning("answer LLM call failed for %s (%s); using heuristic", cid, exc)
+        return fallback
+
+    if not isinstance(result, dict) or not result.get("answer"):
+        return fallback
+    return {
+        "answer": str(result.get("answer"))[:1000],
+        "score": _normalize_score(result.get("score"), h_score),
+        "reason": str(result.get("reason") or h_reason)[:500],
+    }
+
+
 # ── Main orchestrator ─────────────────────────────────────────────────
 
 
@@ -288,7 +528,7 @@ async def mas_negotiate_rounds(
             "pre_score": float(p["score"]),
             "hgt_label": int(p.get("label", 0)),
             "score_gap": float(p.get("score_gap", 0.0)),
-            "motif": {},
+            "pair_record": p,
         })
 
     await publish({
@@ -311,48 +551,84 @@ async def mas_negotiate_rounds(
 
     # ───────────────────────────── ROUND 1: PERSONA ─────────────────────
     await publish({"type": "round_start", "round": 1, "label": ROUND_LABELS[1]})
-    husband_persona = _persona_from_heuristic(husband, husband_narr, None)
-    await publish({"type": "persona", "person_id": husband_id, "resume": husband_persona})
+
+    # Run K+1 persona calls concurrently. Husband has no motif (no self-pair).
+    for c in candidates:
+        c["motifs"] = (
+            match_motifs(husband, c["person"], c["pair_record"])
+            if _MOTIF_MATCHER_AVAILABLE else []
+        )
+
+    persona_tasks = [asyncio.create_task(_persona_call(
+        person_id=husband_id, role="target", profile=husband,
+        narrative=husband_narr, pre_score=None,
+        year=year, ablation=ablation, hint_log=hint_log, hint_role="target",
+    ))]
     for c in candidates:
         cid = c["person"]["id"]
-        c["persona"] = _persona_from_heuristic(c["person"], c["narrative"], c["pre_score"])
-        await publish({"type": "persona", "person_id": cid, "resume": c["persona"]})
+        persona_tasks.append(asyncio.create_task(_persona_call(
+            person_id=cid, role="candidate", profile=c["person"],
+            narrative=c["narrative"], pre_score=c["pre_score"],
+            year=year, ablation=ablation, hint_log=hint_log, hint_role=f"c-{cid}",
+        )))
+
+    persona_results = await asyncio.gather(*persona_tasks)
+    husband_persona = persona_results[0]
+    await publish({"type": "persona", "person_id": husband_id,
+                   "resume": husband_persona, "motifs": []})
+    for c, persona in zip(candidates, persona_results[1:]):
+        cid = c["person"]["id"]
+        c["persona"] = persona
+        await publish({"type": "persona", "person_id": cid,
+                       "resume": persona, "motifs": c.get("motifs") or []})
 
     await publish({"type": "round_paused", "round": 1, "awaiting": "user_advance"})
     await advance_event.wait(); advance_event.clear()
     await _drain_hints(publish, hint_queue, hint_log)
 
     # ───────────────────────── ROUNDS 2–5: QUERY/ANSWER/SCORE ───────────
+    round_pairs: list[dict] = []
     for round_n in range(2, 6):
         await publish({"type": "round_start", "round": round_n,
                        "label": ROUND_LABELS[round_n]})
         focus = ROUND_FOCUS[round_n]
 
-        round_pairs: list[dict] = []
+        # Single husband call: scores all K candidates and drafts K queries.
+        query_map = await _query_call(
+            husband_id=husband_id, husband_persona=husband_persona,
+            candidates=candidates, round_focus=focus, hint_log=hint_log,
+            round_n=round_n,
+        )
+
+        # Emit one query frame per candidate (preserves cohort ordering).
         for c in candidates:
             cid = c["person"]["id"]
-
-            # target → candidate query
-            q_text = _question_for_red_flag(c["persona"], focus)
             await publish({"type": "query", "from": "target",
-                           "to": f"c-{cid}", "text": q_text})
+                           "to": f"c-{cid}", "text": query_map[cid]["query"]})
 
-            # candidate → target answer (in candidate persona)
-            a_text = _answer_in_persona(c["persona"], q_text)
+        # Per-candidate answer calls in parallel.
+        answer_tasks = [
+            asyncio.create_task(_answer_call(
+                husband_id=husband_id, husband_persona=husband_persona,
+                candidate=c, question_text=query_map[c["person"]["id"]]["query"],
+                round_focus=focus, hint_log=hint_log, round_n=round_n,
+            ))
+            for c in candidates
+        ]
+        answer_results = await asyncio.gather(*answer_tasks)
+
+        round_pairs = []
+        for c, ans in zip(candidates, answer_results):
+            cid = c["person"]["id"]
             await publish({"type": "answer", "from": f"c-{cid}",
-                           "to": "target", "text": a_text})
-
-            # both sides score each other (heuristic; would be Qwen with key)
-            t_score, t_reason = _score_pair(husband_persona, c["persona"],
-                                            c["pre_score"], round_n)
-            c_score, c_reason = _score_pair(c["persona"], husband_persona,
-                                            c["pre_score"], round_n)
+                           "to": "target", "text": ans["answer"]})
+            qm = query_map[cid]
             round_pairs.append({
                 "candidate_id": cid,
-                "target_score": t_score,
-                "candidate_score": c_score,
-                "target_reason": t_reason,
-                "candidate_reason": c_reason,
+                "target_score": _normalize_score(qm["score"]),
+                "candidate_score": _normalize_score(ans["score"]),
+                "target_reason": qm["reason"],
+                "candidate_reason": ans["reason"],
             })
 
         await publish({"type": "round_scores", "round": round_n, "pairs": round_pairs})
