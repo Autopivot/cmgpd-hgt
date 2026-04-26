@@ -79,7 +79,19 @@ def _load_cohort(year: int, ablation: str) -> dict:
 
 
 def _safe_load_narrative(person_id: str, year: int) -> dict:
-    """Returns {events, income, birth_year} — empty if DS0003 not available."""
+    """Returns {events, income, birth_year} — empty if DS0003 not available.
+
+    Short-circuits when no parquet cache exists: the .rda direct-load path
+    via pyreadr blocks the event loop for 30+ seconds on a 1.5M-row file,
+    and DS0003 doesn't actually have the YEAR/PERSON_ID columns the loader
+    expects (verified empirically — it has FOUNDER_ID and no time series).
+    Skipping the load lets round 1 paint immediately and rounds 2-5 still
+    run in stub mode.
+    """
+    from pathlib import Path
+    cache = Path(__file__).resolve().parents[2].parent / "data" / "processed" / "ds0003" / "ds0003.parquet"
+    if not cache.exists():
+        return {"events": [], "income": [], "birth_year": None}
     try:
         from server.data.events_loader import (
             load_events, load_income, get_birth_year,
