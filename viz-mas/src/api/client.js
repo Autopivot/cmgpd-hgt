@@ -216,6 +216,22 @@ export async function getNarrative(person_id, year) {
   }
 }
 
+/**
+ * Cleaned-parquet profile for one person. Used by V4's click-popup and
+ * by V5 to pre-fill the husband header before the negotiation streams.
+ * Returns { id, sex, birth_year, banner_id, community_id, household_id }
+ * (or a {sex:'?'} stub if the backend is offline).
+ */
+export async function getProfile(person_id) {
+  try {
+    const r = await http.get(`/profile/${encodeURIComponent(person_id)}`)
+    return r.data
+  } catch {
+    return { id: person_id, sex: '?', birth_year: null,
+             banner_id: null, community_id: null, household_id: null }
+  }
+}
+
 export async function overrideMatch(husband_id, wife_id, score, note, year, ablation) {
   const r = await http.post(`/negotiate/${encodeURIComponent(husband_id)}/override`, {
     wife_id, score, note, year, ablation,

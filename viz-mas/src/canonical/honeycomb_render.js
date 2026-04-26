@@ -16,9 +16,12 @@
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 // Fixed color stops (do not change without coordinating with other subagents).
-const COLOR_LOW  = '#993c1d';   // meanScoreGap <= -1
+// Anchors at ±2 logit-gap units. Per-pair score_gap reaches ±13 but
+// cell-mean values concentrate by averaging up to 12 pairs, so most cells
+// sit in [−2, +2]; wider anchors washed out the diverging signal.
+const COLOR_LOW  = '#993c1d';   // meanScoreGap <= -2
 const COLOR_MID  = '#f5f1e8';   // meanScoreGap ~= 0
-const COLOR_HIGH = '#0f6e56';   // meanScoreGap >= +1
+const COLOR_HIGH = '#0f6e56';   // meanScoreGap >= +2
 const BORDER_COLOR = '#888780';
 const STRIPE_COLOR = '#888780';
 const EMPTY_FILL   = '#ffffff';
@@ -209,16 +212,16 @@ export function renderHoneycomb(svgEl, layout, opts = {}) {
 
 /**
  * 3-stop diverging color scale on score-gap value.
- *   v <= -1  →  COLOR_LOW
+ *   v <= -2  →  COLOR_LOW
  *   v ==  0  →  COLOR_MID
- *   v >= +1  →  COLOR_HIGH
+ *   v >= +2  →  COLOR_HIGH
  * Linear interpolation in sRGB between adjacent stops.
  */
 function divergingColor(v) {
-    if (v <= -1) return COLOR_LOW;
-    if (v >= 1) return COLOR_HIGH;
-    if (v < 0) return lerpHex(COLOR_LOW, COLOR_MID, v + 1);   // -1..0 → 0..1
-    return lerpHex(COLOR_MID, COLOR_HIGH, v);                  //  0..1
+    if (v <= -2) return COLOR_LOW;
+    if (v >= 2) return COLOR_HIGH;
+    if (v < 0) return lerpHex(COLOR_LOW, COLOR_MID, (v + 2) / 2);   // -2..0 → 0..1
+    return lerpHex(COLOR_MID, COLOR_HIGH, v / 2);                    //  0..2 → 0..1
 }
 
 function lerpHex(a, b, t) {
