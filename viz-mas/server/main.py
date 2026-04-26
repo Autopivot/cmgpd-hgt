@@ -50,6 +50,7 @@ from pydantic import BaseModel
 # Multi-Agent System (MAS) modules — per-person LLM negotiation,
 # WebSocket fan-out, hint storage, accepted-match log.
 from .mas import agent as mas_agent
+from .mas.profiles import get_profile as mas_get_profile
 # The single-shot negotiator is REMOVED with the V5 6-round refactor. The
 # import is kept commented for one merge cycle so reviewers can see the
 # replacement; delete after unit 5 lands.
@@ -250,6 +251,19 @@ def api_narrative(person_id: str, year: int = Query(..., ge=1700, le=2000)):
         "events": events,
         "income": income,
     }
+
+
+@app.get("/api/profile/{person_id}")
+def api_profile(person_id: str):
+    """Return the cleaned-parquet attributes for one person.
+
+    Backs V4's click-popup (sex / birth / banner / community / household)
+    and seeds V5's husband header before the negotiation streams. Falls
+    back to a {sex:'?', birth_year:None, ...} stub when the parquet is
+    missing or the id is unknown — matching the frontend's offline stub
+    so the UI behaves identically with or without the backend.
+    """
+    return mas_get_profile(person_id)
 
 
 @app.get("/api/shap/{pair_id}")
