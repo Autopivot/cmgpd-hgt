@@ -1,0 +1,9 @@
+# 10 Discussion and Limitations
+
+**Generalisation beyond CMGPD-LN.** The design is conditioned on a single panel; real jiapu carry far sparser per-person evidence, and the persona prompt must degrade gracefully as fields go missing. Our event-block and income-block formatters already render `(no events on register)` without breaking the LLM call; field-level ablation studies on synthetic-sparsity panels are an immediate next step.
+
+**LLM provenance auditability.** While the per-round transcript is preserved verbatim, model outputs may still be plausible-sounding but incorrect. Our defensive design isolates the orchestrator from any single bad call (per-call try / except + heuristic fallback), but a fully audited corpus would require attaching cryptographic attestations to each call's prompt + response pair, which we do not do.
+
+**Monocultural priors.** The Qing-era persona prompt embeds banner endogamy and lineage-continuity values explicitly. Reusing the same prompt template for a different patrilineal society (Korean, Vietnamese, Han elsewhere) would require redesigning these defaults; DG3 was deliberately written to surface this so that the prompt templates remain a first-class artefact of the design.
+
+**Compute envelope.** A six-round real-Qwen negotiation for six candidates costs roughly 30–45 s on the DashScope endpoint at `qwen-plus-2025-04-28`. The interface remains responsive because round-1 personas and round-2–5 answers are dispatched in parallel via `asyncio.gather`; nevertheless, batch commits in V4 remain the right entry point for high-confidence cases, and V5 is reserved for where deliberation is warranted.

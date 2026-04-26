@@ -1,0 +1,3 @@
+# 11 Conclusion
+
+**[SYSTEM]** reframes genealogical marriage-edge reconstruction as a collaborative analytic process between an HGT link-prediction backbone, a SEAL motif-grounded LLM agent population, and a historian whose archival hints are first-class inputs to the loop. By making provenance, narrative, and reversibility constitutive of every commit — not after-the-fact explanations — [SYSTEM] provides a workspace in which low-confidence GNN rankings become defensible reconstructions. The CMGPD-LN ablation harness lets each design decision be graded against ground truth, and the system generalises in the direction that matters: a workspace whose every artefact is interpretable to the historian who must vouch for the finished tree.
