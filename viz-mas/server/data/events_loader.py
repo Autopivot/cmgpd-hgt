@@ -1,18 +1,32 @@
 """DS0003 life-event + income loader for the V5 (Agent Arena) narrative agents.
 
-DS0003 is the ICPSR 27063 supplement to CMGPD-LN that records discrete vital
+DS0003 is the ICPSR 27063 supplement to CMGPD-LN. It records discrete vital
 events (births, deaths, marriages, migrations, ...) and an estimated annual
 income per person-year. The negotiation pipeline grounds each Qwen persona in
 the candidate's real life history; this module serves the cleaned, label-
 substituted rows.
 
-Loading strategy mirrors `src/stage0_data.py`:
-    parquet cache → CSV cache → Rscript export → pyreadr fallback
-On first call the resulting DataFrame is held in a module-level cache behind
-a thread lock (mirrors `server/mas/profiles.py`). All public functions
-degrade gracefully to safe empty values if the underlying data files are
-missing — the rest of the pipeline must run in dev environments without
-DS0003.
+Schema reality check
+--------------------
+DS0003 does **not** carry PERSON_ID or YEAR. It has 1,513,357 rows keyed by
+``RECORD_NUMBER`` (zero-padded factor like ``"000000001"``) and the per-record
+columns ``EVENT_1``, ``EVENT_2``, ``ESTIMATED_INCOME``. DS0001's cleaned
+parquet has the same 1,513,357 rows with ``RECORD_NUMBER`` as a plain int
+plus ``PERSON_ID`` / ``YEAR`` / ``BIRTHYEAR``. We join 1:1 on
+``RECORD_NUMBER`` (after stripping DS0003's leading zeros) and persist the
+joined frame as a parquet cache.
+
+Loading strategy
+----------------
+On first call:
+    1. If ``ds0003_joined.parquet`` exists, load it.
+    2. Else build it: produce ``ds0003_raw_from_r.csv.gz`` via Rscript (or
+       pyreadr fallback), read DS0001 columns, join, persist parquet.
+
+The DataFrame is held in a module-level cache behind a thread lock (mirrors
+``server/mas/profiles.py``). All public functions degrade gracefully to safe
+empty values if the underlying data files are missing — the rest of the
+pipeline must run in dev environments without DS0003.
 """
 from __future__ import annotations
 
@@ -36,23 +50,30 @@ _NEW_ROOT = Path(__file__).resolve().parents[3]
 
 RDA_PATH = _NEW_ROOT / "data" / "raw" / "DS0003" / "27063-0003-Data.rda"
 LABELS_PATH = _NEW_ROOT / "data" / "raw" / "DS0003" / "event_value_labels.json"
+DS0001_PARQUET_PATH = _NEW_ROOT / "data" / "processed" / "hgt_pipeline" / "ds0001_clean.parquet"
+
 CSV_CACHE_PATH = _NEW_ROOT / "data" / "processed" / "ds0003" / "ds0003_raw_from_r.csv.gz"
-PARQUET_CACHE_PATH = _NEW_ROOT / "data" / "processed" / "ds0003" / "ds0003_clean.parquet"
+JOINED_PARQUET_PATH = _NEW_ROOT / "data" / "processed" / "ds0003" / "ds0003_joined.parquet"
+
 R_EXPORT_SCRIPT_PATH = _NEW_ROOT / "scripts" / "export_ds0003_rda.R"
 R_EXECUTABLE = os.environ.get("R_EXECUTABLE") or shutil.which("Rscript")
 
-# Columns kept from the raw DS0003 frame.
-_KEEP_COLS = ["PERSON_ID", "YEAR", "EVENT_1", "EVENT_2", "ESTIMATED_INCOME"]
+# Columns kept from DS0003 raw (R export already restricts to these four).
+_DS0003_COLS = ["RECORD_NUMBER", "EVENT_1", "EVENT_2", "ESTIMATED_INCOME"]
+# Columns pulled from DS0001 to attach person identity + observation year.
+_DS0001_COLS = ["RECORD_NUMBER", "PERSON_ID", "YEAR", "BIRTHYEAR"]
 
-# Income bucket boundaries.
+# Income tertile boundaries. The raw distribution is ~98 % zeros, so tertiles
+# of the full series collapse to 0/0; we compute thresholds over non-zero
+# incomes only and treat zero as "low".
 _LOW_Q, _HIGH_Q = 0.33, 0.66
 
 # ── Module-level cache (thread-safe lazy load) ─────────────────────────
 _lock = Lock()
 _loaded = False
-_df = None                          # pandas.DataFrame keyed by PERSON_ID (object), indexed for fast lookup
-_event_labels: dict[str, dict[int, str]] = {}   # {"EVENT_1": {1: "Death", ...}, "EVENT_2": {...}}
-_missing_codes: dict[str, int] = {}             # {"EVENT_1": -99, "EVENT_2": -99}
+_df: Optional[pd.DataFrame] = None
+_event_labels: dict[str, dict[int, str]] = {}
+_missing_codes: dict[str, int] = {}
 _income_low: float | None = None
 _income_high: float | None = None
 
@@ -60,9 +81,12 @@ _income_high: float | None = None
 def _normalize_person_id(person_id: str) -> str:
     """Strip the leading 'P' that the rest of the codebase uses for display.
 
-    DS0003 stores bare numeric PERSON_IDs; cohort JSONs prefix them with 'P'.
+    DS0001 stores bare numeric PERSON_IDs; cohort JSONs prefix them with 'P'.
     """
-    return person_id[1:] if person_id.startswith("P") else person_id
+    if person_id is None:
+        return ""
+    s = str(person_id).strip()
+    return s[1:] if s.startswith("P") else s
 
 
 def _load_labels() -> None:
@@ -81,7 +105,6 @@ def _load_labels() -> None:
     for col in ("EVENT_1", "EVENT_2"):
         section = blob.get(col, {})
         labels = section.get("labels", {})
-        # Keys are strings in JSON; convert to int for the in-memory map.
         decoded: dict[int, str] = {}
         for k, v in labels.items():
             try:
@@ -89,7 +112,6 @@ def _load_labels() -> None:
             except (TypeError, ValueError):
                 continue
         _event_labels[col] = decoded
-        # Per the JSON schema, missing_code is the integer used for "no event".
         try:
             _missing_codes[col] = int(section.get("missing_code", -99))
         except (TypeError, ValueError):
@@ -124,7 +146,7 @@ def _export_with_rscript() -> bool:
     return True
 
 
-def _read_with_pyreadr():
+def _read_with_pyreadr() -> Optional[pd.DataFrame]:
     """pyreadr fallback — reads the .rda directly. Returns DataFrame or None."""
     try:
         import pyreadr
@@ -142,19 +164,26 @@ def _read_with_pyreadr():
         return None
     key = next(iter(result.keys()))
     df = result[key]
-    keep = [c for c in _KEEP_COLS if c in df.columns]
-    return df[keep].copy()
+    missing = [c for c in _DS0003_COLS if c not in df.columns]
+    if missing:
+        log.warning("pyreadr DS0003 frame missing columns %s", missing)
+        return None
+    # RECORD_NUMBER is a categorical with zero-padded labels; pd.to_numeric
+    # parses "000000001" -> 1 directly. EVENT_1/2 are labelled categoricals
+    # like "(1) Death" — extract the leading code so the result matches the
+    # R-CSV schema.
+    out = pd.DataFrame({
+        "RECORD_NUMBER": pd.to_numeric(df["RECORD_NUMBER"].astype(str), errors="coerce").astype("Int64"),
+        "ESTIMATED_INCOME": pd.to_numeric(df["ESTIMATED_INCOME"], errors="coerce"),
+    })
+    for col in ("EVENT_1", "EVENT_2"):
+        codes = df[col].astype(str).str.extract(r"^\(([0-9-]+)\)", expand=False)
+        out[col] = pd.to_numeric(codes, errors="coerce").fillna(-99).astype("int64")
+    return out[_DS0003_COLS]
 
 
-def _load_dataframe():
-    """Read DS0003 into a pandas DataFrame; return None if everything fails."""
-    if PARQUET_CACHE_PATH.exists():
-        log.info("Loading DS0003 from parquet cache %s", PARQUET_CACHE_PATH)
-        try:
-            return pd.read_parquet(PARQUET_CACHE_PATH)
-        except Exception as exc:
-            log.warning("Failed to read parquet cache (%s); regenerating", exc)
-
+def _read_ds0003_raw() -> Optional[pd.DataFrame]:
+    """Get the cleaned DS0003 frame (RECORD_NUMBER int + events + income)."""
     if not CSV_CACHE_PATH.exists():
         _export_with_rscript()
 
@@ -162,39 +191,70 @@ def _load_dataframe():
         log.info("Loading DS0003 raw CSV cache from %s", CSV_CACHE_PATH)
         try:
             df = pd.read_csv(CSV_CACHE_PATH, compression="gzip", low_memory=False)
+            return df[_DS0003_COLS].copy()
         except Exception as exc:
-            log.warning("Failed to read DS0003 CSV cache (%s)", exc)
-            df = None
-    else:
-        df = None
+            log.warning("Failed to read DS0003 CSV cache (%s); falling back to pyreadr", exc)
 
-    if df is None:
-        df = _read_with_pyreadr()
+    return _read_with_pyreadr()
 
-    if df is None:
-        log.warning("DS0003 unavailable: events_loader will return empty results")
+
+def _read_ds0001_keys() -> Optional[pd.DataFrame]:
+    """Read PERSON_ID / YEAR / BIRTHYEAR keyed by RECORD_NUMBER from DS0001."""
+    if not DS0001_PARQUET_PATH.exists():
+        log.warning("DS0001 parquet not found at %s; cannot join DS0003", DS0001_PARQUET_PATH)
+        return None
+    try:
+        return pd.read_parquet(DS0001_PARQUET_PATH, columns=_DS0001_COLS)
+    except Exception as exc:
+        log.warning("Failed to read DS0001 parquet (%s)", exc)
         return None
 
-    # Coerce expected dtypes; events / income are numeric, PERSON_ID is string.
-    keep = [c for c in _KEEP_COLS if c in df.columns]
-    df = df[keep].copy()
-    df["PERSON_ID"] = df["PERSON_ID"].astype(str).str.strip().str.replace(r"\.0+$", "", regex=True)
-    for col in ("YEAR", "EVENT_1", "EVENT_2", "ESTIMATED_INCOME"):
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Persist parquet for fast subsequent loads.
+def _build_joined_dataframe() -> Optional[pd.DataFrame]:
+    """Build the DS0003-joined frame from raw sources and persist a parquet cache."""
+    ds0003 = _read_ds0003_raw()
+    if ds0003 is None:
+        return None
+    ds0001 = _read_ds0001_keys()
+    if ds0001 is None:
+        return None
+
+    ds0003["RECORD_NUMBER"] = pd.to_numeric(ds0003["RECORD_NUMBER"], errors="coerce").astype("Int64")
+    ds0001["RECORD_NUMBER"] = pd.to_numeric(ds0001["RECORD_NUMBER"], errors="coerce").astype("Int64")
+    joined = ds0001.merge(ds0003, on="RECORD_NUMBER", how="inner")
+    log.info(
+        "DS0003 joined to DS0001 on RECORD_NUMBER: %d rows (DS0001=%d, DS0003=%d)",
+        len(joined), len(ds0001), len(ds0003),
+    )
+    joined["PERSON_ID"] = joined["PERSON_ID"].astype(str).str.strip()
+    joined["YEAR"] = pd.to_numeric(joined["YEAR"], errors="coerce").astype("Int64")
+    joined["BIRTHYEAR"] = pd.to_numeric(joined["BIRTHYEAR"], errors="coerce")
+    for col in ("EVENT_1", "EVENT_2"):
+        joined[col] = pd.to_numeric(joined[col], errors="coerce").fillna(-99).astype("int64")
+    joined["ESTIMATED_INCOME"] = pd.to_numeric(joined["ESTIMATED_INCOME"], errors="coerce")
+
     try:
-        PARQUET_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(PARQUET_CACHE_PATH, index=False)
-        log.info("Wrote DS0003 parquet cache to %s", PARQUET_CACHE_PATH)
+        JOINED_PARQUET_PATH.parent.mkdir(parents=True, exist_ok=True)
+        joined.to_parquet(JOINED_PARQUET_PATH, index=False)
+        log.info("Wrote DS0003 joined parquet cache to %s", JOINED_PARQUET_PATH)
     except Exception as exc:
-        log.warning("Could not write DS0003 parquet cache (%s); continuing without it", exc)
+        log.warning("Could not write DS0003 joined parquet (%s); continuing without it", exc)
 
-    return df
+    return joined
 
 
-def _index_dataframe(df):
+def _load_dataframe() -> Optional[pd.DataFrame]:
+    """Read the joined DS0003+DS0001 frame; build it if missing."""
+    if JOINED_PARQUET_PATH.exists():
+        log.info("Loading DS0003 joined frame from %s", JOINED_PARQUET_PATH)
+        try:
+            return pd.read_parquet(JOINED_PARQUET_PATH)
+        except Exception as exc:
+            log.warning("Failed to read joined parquet (%s); rebuilding", exc)
+    return _build_joined_dataframe()
+
+
+def _index_dataframe(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
     """Sort by (PERSON_ID, YEAR) and set PERSON_ID as the index for fast .loc."""
     if df is None or len(df) == 0:
         return df
@@ -204,15 +264,21 @@ def _index_dataframe(df):
     return df
 
 
-def _compute_income_quantiles(df) -> tuple[float | None, float | None]:
-    """Global 33rd/66th percentiles of non-null ESTIMATED_INCOME."""
+def _compute_income_quantiles(df: Optional[pd.DataFrame]) -> tuple[float | None, float | None]:
+    """Tertile boundaries over **non-zero** ESTIMATED_INCOME.
+
+    The full distribution is ~98 % zeros, so quantiles of the raw series
+    collapse to 0/0. We compute thresholds over positive incomes only;
+    `_income_level` then routes income == 0 (and anything <= q33) to "low".
+    """
     if df is None or "ESTIMATED_INCOME" not in df.columns:
         return None, None
     series = df["ESTIMATED_INCOME"].dropna()
-    if series.empty:
+    nonzero = series[series > 0]
+    if nonzero.empty:
         return None, None
     try:
-        return float(series.quantile(_LOW_Q)), float(series.quantile(_HIGH_Q))
+        return float(nonzero.quantile(_LOW_Q)), float(nonzero.quantile(_HIGH_Q))
     except Exception as exc:
         log.warning("Failed to compute DS0003 income quantiles (%s)", exc)
         return None, None
@@ -246,7 +312,7 @@ def _income_level(value: float) -> str:
     return "mid"
 
 
-def _person_rows(person_id: str, start_year: int, end_year: int):
+def _person_rows(person_id: str, start_year: int, end_year: int) -> Optional[pd.DataFrame]:
     """Return the slice of rows for `person_id` within the year window, or None."""
     _ensure_loaded()
     if _df is None or len(_df) == 0:
@@ -254,7 +320,7 @@ def _person_rows(person_id: str, start_year: int, end_year: int):
     raw = _normalize_person_id(person_id)
     if raw not in _df.index:
         return None
-    sub = _df.loc[[raw]]   # always returns a DataFrame even for single match
+    sub = _df.loc[[raw]]
     if "YEAR" in sub.columns:
         sub = sub[(sub["YEAR"] >= start_year) & (sub["YEAR"] <= end_year)]
     if sub.empty:
@@ -327,9 +393,10 @@ def load_income(person_id: str, start_year: int, end_year: int) -> list[dict]:
 
 
 def get_birth_year(person_id: str) -> int | None:
-    """Return the earliest YEAR where EVENT_1 or EVENT_2 decodes to 'Birth'.
+    """Return the BIRTHYEAR for this PERSON_ID, or None if unknown.
 
-    Returns None if the person is not in DS0003 or has no Birth event.
+    BIRTHYEAR is sourced from DS0001 (it is constant across that person's
+    rows), so we just take the first non-null value.
     """
     _ensure_loaded()
     if _df is None or len(_df) == 0:
@@ -337,14 +404,13 @@ def get_birth_year(person_id: str) -> int | None:
     raw = _normalize_person_id(person_id)
     if raw not in _df.index:
         return None
-    # _index_dataframe sorts by (PERSON_ID, YEAR) ascending, so the first
-    # Birth row encountered is the earliest.
-    for _, row in _df.loc[[raw]].iterrows():
-        if _decode_event("EVENT_1", row.get("EVENT_1")) != "Birth" and \
-           _decode_event("EVENT_2", row.get("EVENT_2")) != "Birth":
-            continue
-        try:
-            return int(row["YEAR"])
-        except (KeyError, TypeError, ValueError):
-            continue
-    return None
+    rows = _df.loc[[raw]]
+    if "BIRTHYEAR" not in rows.columns:
+        return None
+    series = rows["BIRTHYEAR"].dropna()
+    if series.empty:
+        return None
+    try:
+        return int(series.iloc[0])
+    except (TypeError, ValueError):
+        return None
