@@ -189,19 +189,17 @@ function onHexSelect(payload) {
 }
 
 async function loadHusband(id) {
+  // New target → kill any in-flight stream and reset the running gate so
+  // the ▶ arena button isn't stuck disabled if the previous WS died
+  // before connecting.
+  closeWS()
   husband.value = { id }
   husbandProfile.value = null
   candidates.value = []
   agents.value = []
   finalRanking.value = null
   accepted.value = null
-  // Pre-fetch one pair just to populate the chip; full profile arrives
-  // when the negotiation publishes its 'profile' stage event.
-  try {
-    // Fast lookup: scan the first cohort pair for this husband to grab a
-    // wife_id we don't really need. (No profile API exists yet on the
-    // frontend; the 'stage:profile' event will fill husbandProfile.)
-  } catch {}
+  streamState.value = 'idle'
 }
 
 // ── Start the negotiation ──────────────────────────────────────────────
@@ -245,6 +243,9 @@ async function startBattle() {
 
 function closeWS() {
   if (activeWS) { try { activeWS.close() } catch {} ; activeWS = null }
+  // Explicit reset — don't rely on ws.onclose firing, since a WS that
+  // never finishes connecting won't ever dispatch 'close'.
+  running.value = false
 }
 
 // ── Event dispatch ─────────────────────────────────────────────────────
@@ -393,8 +394,12 @@ async function acceptOne(a) {
   bus.emit('match-accepted', {
     husband_id: husband.value.id, wife_id: a.id, score: a.target_score,
   })
-  try { await overrideMatch(husband.value.id, a.id, a.target_score ?? 0.75, 'user-accept') }
-  catch (e) { logSys(`override POST failed: ${e.message || e}`, 'err') }
+  try {
+    await overrideMatch(
+      husband.value.id, a.id, a.target_score ?? 0.75, 'user-accept',
+      appState.year, appState.ablation,
+    )
+  } catch (e) { logSys(`override POST failed: ${e.message || e}`, 'err') }
 }
 
 // ── Lifecycle ──────────────────────────────────────────────────────────

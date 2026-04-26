@@ -326,6 +326,8 @@ class _OverrideBody(BaseModel):
     wife_id: str
     score: float | None = None
     note: str | None = None
+    year: int | None = None
+    ablation: str | None = None
 
 
 @app.post("/api/negotiate/{husband_id}/override")
@@ -333,6 +335,7 @@ async def api_negotiate_override(husband_id: str, body: _OverrideBody):
     rec = mas_state.commit_match(
         husband_id=husband_id, wife_id=body.wife_id,
         score=body.score, source="override", note=body.note or "",
+        year=body.year, ablation=body.ablation,
     )
     await mas_broker.publish(
         f"negotiate:{husband_id}",
@@ -344,6 +347,87 @@ async def api_negotiate_override(husband_id: str, body: _OverrideBody):
 @app.get("/api/negotiate/accepted")
 async def api_accepted_all():
     return mas_state.all_accepted()
+
+
+# ── V1 learning curve: MAS recall@1 trajectory vs HGT static baseline ─
+@app.get("/api/eval/progress")
+async def api_eval_progress(year: int, ablation: str = "ablated"):
+    """Per-acceptance running quality of the MAS pipeline against the
+    cohort's ground-truth marriage edges, plus the HGT-only baseline as
+    a horizontal reference line.
+
+    For each husband we accept (via auto-commit or user override) we
+    look up the cohort's positive (label=1) wife. If they match the
+    accepted wife, the acceptance is "correct"; otherwise wrong. The
+    running recall@1 = (correct so far) / (positives accepted so far).
+
+    Husbands without a known positive in the cohort (e.g. user accepts
+    a hard-negative) are excluded from the recall denominator but still
+    counted in n_accepted (the x-axis).
+    """
+    try:
+        cohort = load_cohort(year, ablation)
+    except HTTPException as e:
+        raise e
+
+    # Build husband_id → ground-truth wife_id from the cohort positives.
+    gt_wife: dict[str, str] = {}
+    for p in cohort["pairs"]:
+        if p.get("label") == 1:
+            gt_wife.setdefault(p["husband_id"], p["wife_id"])
+
+    # HGT static baseline: precomputed Hungarian recall@1 across all
+    # positives in this cohort. Same number V1 used to show in its row.
+    positives = [p for p in cohort["pairs"] if p.get("label") == 1]
+    n_pos = len(positives)
+    correct = sum(1 for p in positives if p.get("hungarian_correct") is True)
+    hgt_recall_at_1 = (correct / n_pos) if n_pos else 0.0
+
+    # MAS trajectory.
+    log = mas_state.accept_log(year=year, ablation=ablation)
+    trajectory = []
+    n_accept = 0
+    n_eligible = 0   # accepts with a known ground-truth wife in this cohort
+    n_correct = 0
+    for rec in log:
+        n_accept += 1
+        true_w = gt_wife.get(rec["husband_id"])
+        if true_w is not None:
+            n_eligible += 1
+            if true_w == rec["wife_id"]:
+                n_correct += 1
+        trajectory.append({
+            "ts": rec["ts"],
+            "n_accepted": n_accept,
+            "n_eligible": n_eligible,
+            "n_correct": n_correct,
+            "mas_recall_at_1": (n_correct / n_eligible) if n_eligible else None,
+            "husband_id": rec["husband_id"],
+            "wife_id": rec["wife_id"],
+            "source": rec["source"],
+        })
+
+    return {
+        "year": year,
+        "ablation": ablation,
+        "hgt_baseline": {
+            "recall_at_1": hgt_recall_at_1,
+            "n_positives": n_pos,
+        },
+        "trajectory": trajectory,
+        "n_accepted_total": n_accept,
+        "n_eligible_total": n_eligible,
+        "n_correct_total": n_correct,
+        "mas_recall_at_1_now": (n_correct / n_eligible) if n_eligible else None,
+    }
+
+
+@app.post("/api/eval/reset")
+async def api_eval_reset():
+    """Clear the accept log + per-husband latest map. Lets you start a
+    fresh learning-curve session from V1 without restarting the server."""
+    mas_state.reset_log()
+    return {"status": "ok"}
 
 
 # ── LLM config (set DASHSCOPE key + model name from the title bar) ────

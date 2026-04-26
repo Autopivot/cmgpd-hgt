@@ -230,6 +230,7 @@ async def negotiate(husband_id: str, year: int, ablation: str,
         rec = state.commit_match(
             husband_id=husband_id, wife_id=chosen["wife_id"],
             score=chosen["final_score"], source="auto",
+            year=year, ablation=ablation,
         )
         await broker.publish(topic, {"type": "committed", "match": rec})
 

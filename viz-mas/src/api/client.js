@@ -179,11 +179,33 @@ export async function sendNegotiationHint(husband_id, text, role = 'all') {
   return r.data
 }
 
-export async function overrideMatch(husband_id, wife_id, score, note) {
+export async function overrideMatch(husband_id, wife_id, score, note, year, ablation) {
   const r = await http.post(`/negotiate/${encodeURIComponent(husband_id)}/override`, {
-    wife_id, score, note,
+    wife_id, score, note, year, ablation,
   })
   return r.data
+}
+
+/** V1 learning-curve series + HGT static baseline for the given cohort. */
+export async function getEvalProgress({ year, ablation = 'ablated' } = {}) {
+  try {
+    const r = await http.get('/eval/progress', { params: { year, ablation } })
+    return r.data
+  } catch {
+    return {
+      year, ablation,
+      hgt_baseline: { recall_at_1: 0, n_positives: 0 },
+      trajectory: [],
+      n_accepted_total: 0,
+      n_eligible_total: 0,
+      n_correct_total: 0,
+      mas_recall_at_1_now: null,
+    }
+  }
+}
+
+export async function resetEvalLog() {
+  try { await http.post('/eval/reset') } catch {}
 }
 
 export async function getLLMConfig() {
