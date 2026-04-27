@@ -3,6 +3,12 @@
 Twelve markdown files, in the order they appear in an IEEE VIS draft.
 Stitch in any order; each section is self-contained.
 
+The paper validates **[SYSTEM]** on the **CMGPD-LN** testbed — a Qing triennial
+administrative panel (ICPSR Study 27063), *not* a jiapu — and argues for
+deployment on real Chinese family genealogies (jiapu, 家谱), where the
+female-record gap is the actual problem and ground truth is unavailable.
+Keep this testbed-to-deployment trajectory consistent across edits.
+
 | File | Section | Approx. length |
 |---|---|---|
 | [`00_abstract.md`](00_abstract.md) | Abstract (5-sentence formula) | ½ page |
