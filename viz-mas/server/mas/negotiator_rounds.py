@@ -114,7 +114,7 @@ def _safe_load_narrative(person_id: str, year: int) -> dict:
     Skipping the load lets round 1 paint immediately and rounds 2-5 still
     run in stub mode.
     """
-    cache = ROOT.parent / "data" / "processed" / "ds0003" / "ds0003.parquet"
+    cache = ROOT.parent / "data" / "processed" / "ds0003" / "ds0003_joined.parquet"
     if not cache.exists() or not _EVENTS_LOADER_AVAILABLE:
         return {"events": [], "income": [], "birth_year": None}
     try:
