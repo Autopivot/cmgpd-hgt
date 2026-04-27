@@ -23,13 +23,142 @@ V2 是 *至此为止已被提交内容* 的持久化记录。每一项被接受�
 
 ## 5.4 V3 —— Honeycomb embedding canvas
 
-V3 承担 cohort-as-canvas 这一需求（DG1）。配对通过按队列的 metric multidimensional scaling 在 HGT 联合 embedding 上投影到二维，再经由一种 ASight 风格的迭代 inward-attraction packer 装入一个 flat-top 的 hex grid（同簇 hex 连续涂色，每格容量上限 12 对）。前景模式有三种：
+V3 承担 cohort-as-canvas 这一需求（DG1）。整个视图由四阶计算流程加四层叠加渲染构成。
 
-- **`honeycomb`**：单元颜色按 mean signed score gap 编码，使用以 $\pm 2\,\text{logits}$ 为锚的发散色阶；具有不同 cluster ID 的相邻单元之间绘制簇边界。
-- **`scatter`**：每对一点，使用百分位裁剪（2nd–98th percentile）后的 MDS 坐标；score-gap 色阶与 honeycomb 模式保持一致，以便跨模式可读。
-- **`mixed`**：hex 透明度降到 0.55，点叠加在按单元抖动的位置上，使簇几何与单对噪声可同时阅读。
+### 5.4.1 配对嵌入 pipeline（上游，Python 端）
 
-点击 hex（或一个点，或一次套索 brush）即选中相应配对，并发出 `hex-select`；V4 与 V5 随之响应。表头中的 *score gap* 发散图例（$-2 \dots +2$）使色阶不言自明。重要的是，V3 会 *遮蔽* 那些 $(h, w)$ 配对已落入 running accepted set 的点，并在 `match-restored` 时恢复其完整色阶：因此画布在任意时刻所反映的都是「还剩下什么待提交」，而非静态的 HGT 预测。
+对每一对测试配对 $(m, w)$ 我们先构造其 128 维的 *配对交互向量*
+
+$$
+z_{m,w} \;=\; W_1\,[\,h_m\,\Vert\,h_w\,\Vert\,|h_m - h_w|\,\Vert\,h_m \odot h_w\,] \;\in\; \mathbb{R}^{128}
+$$
+
+—— 这恰好是 marriage scorer（§4.3）的第一层隐藏激活，因此 V3 的几何与驱动 ranking 的同一表征严格锚定。我们额外从训练桶（train bucket）中采样最多 $S = 1000$ 个正样本配对，使其经过同一 scorer 投影头；记 $Z_{\text{test}} \in \mathbb{R}^{n \times 128}$、$Z_{\text{train}} \in \mathbb{R}^{S \times 128}$。
+
+我们在二者拼接后**统一拟合一个 MDS 坐标系**：
+1. 对 $Z = [Z_{\text{test}};\,Z_{\text{train}}]$ 按列做标准化（零均值、单位方差）；
+2. 通过 PCA 降至 $r = \min(50,\,n+S,\,128)$ 个分量；
+3. 形成 $(n+S) \times (n+S)$ 欧式距离不相似度矩阵 $D_{ij} = \|z^{\text{PCA}}_i - z^{\text{PCA}}_j\|_2$，按 $(D + D^\top)/2$ 对称化、对角清零；
+4. 以 $D$ 为预先算好的 dissimilarity 拟合 metric MDS（`n_init=1, max_iter=200, normalized_stress="auto", random_state=0`）至 2 维；结果矩阵的前 $n$ 行即为该队列坐标 $\hat{u}_i \in \mathbb{R}^2$，后 $S$ 行作为 *训练参考背景*，被前端渲染为密度热力图叠在画布之下。
+
+联合拟合是关键：它把测试与训练放进 *同一个* 二维坐标系，使热力图在三种模式下保持可比。簇标签则在 PCA 后的潜空间 $z^{\text{PCA}}$ 上而非 MDS 空间上计算（MDS 的微小畸变会污染边界），采用以 BIC 为分裂准则的 X-means、上界 $k_{\max} = 10$；当 `pyclustering` 不可用时回退至以 silhouette 在 $K \in [2, \min(k_{\max}, \lfloor n/5 \rfloor)]$ 范围内择优的 K-means。$\hat{u}_i$ 与簇标签 $\kappa_i \in \{0, \dots, K-1\}$ 一并写入前端读取的 cohort JSON。
+
+### 5.4.2 坐标归一化
+
+原始 MDS 坐标常有少数极端离群值，把 $\min/\max$ 上下界拉开 3–5 倍，以致 90% 配对挤在画布的 6% 区域里。我们改用 2nd–98th 百分位边界裁剪后再映射到单位方阵：
+
+$$
+u_{i,j} \;=\; \mathrm{clip}\!\left(\frac{\hat{u}_{i,j} - q_{2}(\hat{u}_{:,j})}{q_{98}(\hat{u}_{:,j}) - q_{2}(\hat{u}_{:,j})},\; 0,\; 1\right), \quad j \in \{x, y\}.
+$$
+
+scatter 模式与背景热力图重用同一组百分位边界，使三种前景模式共享同一坐标系。
+
+### 5.4.3 Flat-top 六边形网格
+
+我们用以归一化坐标度量的 flat-top 正六边形（外接圆半径 $R = 0.04$，约 750 px 画布上的 30 px）平铺 $[0,1]^2$。每个单元由轴向偏移坐标 $(q, r)$ 寻址：
+
+$$
+\textsf{cx}(q, r) \;=\; 1.5R\,q, \qquad
+\textsf{cy}(q, r) \;=\; \sqrt{3}\,R\,r \;+\; \begin{cases} \tfrac{\sqrt{3}}{2}R & q \text{ 奇} \\ 0 & q \text{ 偶} \end{cases},
+$$
+
+即 odd-$q$ 偏移：列步长 $1.5R$，行步长 $\sqrt{3}\,R$。单元 $(q, r)$ 的六个顶点为 $(\textsf{cx} + R\cos\theta_k,\; \textsf{cy} + R\sin\theta_k)$，$\theta_k = k\pi/3$，$k = 0, \dots, 5$。我们保留一倍半径的边距，使中心略在 $[0,1]^2$ 之外但内部仍切到画布的格子被保留。在 $R = 0.04$ 时该网格约有 350–500 单元，规模小到「线性扫描求最近格」比构建 KD-tree 更快。
+
+`cluster-borders` 所需的邻接表预先建好一次：单元 $(q, r)$ 的六个轴向邻居为
+
+$$
+\mathcal{N}(q, r) \;=\; (q, r) \;\oplus\;
+\begin{cases}
+\{(+1,0),(+1,-1),(0,-1),(-1,-1),(-1,0),(0,+1)\} & q \text{ 偶} \\
+\{(+1,+1),(+1,0),(0,-1),(-1,0),(-1,+1),(0,+1)\} & q \text{ 奇}.
+\end{cases}
+$$
+
+### 5.4.4 迭代 inward-attraction packer
+
+每对配对 $i$ 都有归一化位置 $u_i$、簇标签 $\kappa_i$，以及一个目标 *簇质心* $c_{\kappa_i} = \mathbb{E}_{j:\,\kappa_j = \kappa_i}[u_j]$。把配对装入 hex 单元的过程满足三条约束：
+
+- **(C1) 同簇单元**：每个单元至多容纳一种簇的点；
+- **(C2) 容量**：每个单元至多容纳 $C = 12$ 个点；
+- **(C3) 簇紧凑性**：每个簇的单元应在 $c_\kappa$ 附近形成连片岛屿。
+
+算法（Algorithm 2）：按 $\|u_i - c_{\kappa_i}\|_2$ 升序排序所有配对，使每个簇最稠密的核心率先入位、占据中心 hex；离群点向外扩散。
+
+```
+for each i in order:
+    p ← u_i;  cl ← κ_i;  c ← c_cl;  placed ← False
+
+    # ── 内向吸引（向质心几何级数收敛）──
+    for it = 1 .. 50:
+        p ← (p + c) / 2                          # 每轮缩半
+        cell ← argmin_{cells} ||p - centre(cell)||²
+        if cell.occupants < C ∧ (cell.cluster ∈ {None, cl}):
+            cell.add(i);  placed ← True;  break
+
+    # ── 外向径向螺旋回退 ──
+    if not placed:
+        radius ← 2R;   angle ← Uniform(0, 2π)
+        for it = 1 .. 200:
+            p ← c + (radius·cos angle, radius·sin angle)
+            cell ← argmin_{cells} ||p - centre(cell)||²
+            if cell.occupants < C ∧ (cell.cluster ∈ {None, cl}):
+                cell.add(i);  placed ← True;  break
+            angle ← angle + 0.7         # 旋转约 40°
+            if it mod 8 == 7: radius ← radius + 2R   # 阿基米德步进
+
+    # ── 兜底扫描（实际很少触发）──
+    if not placed:
+        for cell in cells:
+            if cell.occupants < C ∧ (cell.cluster ∈ {None, cl}):
+                cell.add(i);  break
+```
+
+内向回路的折半步长有闭式上界：$t$ 轮后 $\|p^{(t)} - c\| = 2^{-t}\,\|u_i - c\|$，因此在 6–7 轮内候选位置就稳定地落入质心所在的 hex。外向回退实际上是一条围绕质心的阿基米德螺旋 $r(\theta) = 2R\,(1 + \lfloor\theta/(8 \cdot 0.7)\rfloor)$；$0.7\,\text{rad}$ 的角步长约等于半径 $2R$ 处一个 hex 所张的角，使每条同心环在外推前都被均匀覆盖。
+
+### 5.4.5 单元聚合量
+
+对每个非空单元（占据者集合 $P_c$）我们计算四个诊断聚合：
+
+$$
+\textsf{meanScoreGap}_c = \frac{1}{|P_c|}\sum_{p \in P_c} \mathrm{gap}(p),
+\qquad
+\textsf{posRatio}_c = \frac{1}{|P_c|}\sum_{p \in P_c} \mathbb{1}[\mathrm{label}(p) = 1],
+$$
+$$
+\textsf{patriPathMean}_c = \frac{1}{|P_c|}\sum_{p \in P_c} \mathrm{patriPathCount}(p),
+\qquad
+\textsf{sameLinFrac}_c = \frac{1}{|P_c|}\sum_{p \in P_c} \mathbb{1}[\mathrm{sameLineage}(p)].
+$$
+
+`meanScoreGap` 驱动发散填色；`posRatio` 驱动 outlier 条纹叠层；`patriPathMean` 与 `sameLinFrac` 在 tooltip 中暴露给单元级 inspection。
+
+### 5.4.6 渲染层与视觉编码
+
+层 1 —— **hex 单元**。单元填色按 `meanScoreGap` 走三段式发散色阶，以 $\pm 2$ logits 为锚，在 sRGB 中线性插值：
+
+$$
+\mathrm{color}(v) = \begin{cases}
+\mathrm{lerp}(\mathsf{COLOR\_LOW},\,\mathsf{COLOR\_MID},\,(v + 2)/2) & -2 \le v < 0 \\
+\mathrm{lerp}(\mathsf{COLOR\_MID},\,\mathsf{COLOR\_HIGH},\,v/2) & 0 \le v \le +2 \\
+\mathsf{COLOR\_LOW} & v < -2 \\
+\mathsf{COLOR\_HIGH} & v > +2
+\end{cases}
+$$
+
+其中 $\mathsf{COLOR\_LOW} = \texttt{\#993c1d}$（terracotta）、$\mathsf{COLOR\_MID} = \texttt{\#f5f1e8}$（cream）、$\mathsf{COLOR\_HIGH} = \texttt{\#0f6e56}$（sage）。$\pm 2$ 的锚点是有意为之：单对 $\mathrm{gap} \in [-13, +13]$，但单元均值因平均了至多 12 个对而集中分布于 $[-2, +2]$；早期试运行表明，更宽的锚会把发散信号压成大片中性色。
+
+层 2 —— **outlier 条纹**。设 $\mu = \mathbb{E}[\textsf{posRatio}_c]$、$\sigma = \mathrm{Std}[\textsf{posRatio}_c]$（在所有非空单元上估计）。满足 $|\textsf{posRatio}_c - \mu| > 2\sigma$ 的单元叠加 45° 旋转的对角条纹（4 px 周期、1.5 px 描边、60% 不透明度），在不破坏底层填色的情况下标记结构性偏多/偏少正样本的簇内口袋。
+
+层 3 —— **簇边界**。对每对邻居 $(c_a, c_b) \in \mathcal{N}$，若 $\mathrm{cluster}(c_a) \ne \mathrm{cluster}(c_b)$ 且两者皆非空，则绘制其共享边 —— 即两个多边形共有的两个顶点，由 $\varepsilon = 10^{-6}$ 的坐标匹配在投影后的顶点集合上找出。
+
+层 4 —— **散点叠层**（仅 `scatter` 与 `mixed` 模式）。每对一点，绘于 $u_i$ 处（在 `mixed` 模式下绘于 $\textsf{centre}(\textsf{cell}(i)) + \delta_i$，$\delta_i$ 是单元内的确定哈希抖动）；同一发散色阶按单对 $\mathrm{gap}$ 着色，跨模式可读。模式开关给出三种读法：
+- **`honeycomb`** —— 一眼可读簇及其密度；
+- **`scatter`** —— 单对噪声可见；
+- **`mixed`** —— hex 透明度降到 0.55、点叠加；可在不丢失簇上下文的同时下钻到具体配对。
+
+### 5.4.7 选择与已接受配对的遮蔽
+
+点击 hex（或一个点、或 scatter 模式下的套索 brush）即选中相应配对，发出 `hex-select`；V4 与 V5 随之响应。表头中的 *score gap* 发散图例（$-2 \dots +2$）使色阶不言自明。重要的是，V3 会 *遮蔽* 那些 $(h, w)$ 配对已落入 running accepted set 的点，并在 `match-restored` 时恢复其完整色阶 —— 画布在任意时刻所反映的，是「还剩下什么待提交」，而非静态的 HGT 预测。
 
 ## 5.5 V4 —— 双侧丈夫–妻子细节、batch 操作与按人 profile
 
