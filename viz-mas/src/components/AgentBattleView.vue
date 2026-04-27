@@ -69,6 +69,13 @@
               <span class="lbl">⚠</span>
               <span v-for="r in husbandPersona.red_flags" :key="'r-'+r" class="flag-chip">{{ r }}</span>
             </div>
+            <div v-if="husbandPersona.motifs?.length" class="chip-row">
+              <span class="lbl">motifs:</span>
+              <span v-for="m in husbandPersona.motifs" :key="'m-'+m"
+                    class="motif-chip" :title="MOTIF_LABELS[m] || m">
+                {{ MOTIF_LABELS[m] || m }}
+              </span>
+            </div>
           </div>
           <div v-if="husbandNarrative?.events?.length" class="event-strip">
             <span v-for="ev in husbandNarrative.events" :key="ev.year + (ev.event_1 || '') + (ev.event_2 || '')"
@@ -166,6 +173,15 @@ import {
 } from '../api/client.js'
 import bus from '../utils/eventbus.js'
 import CandidateCard from './CandidateCard.vue'
+
+// SEAL motif IDs (subset emitted by the persona frame). Keep in sync with
+// the exemplar table in client.js (`RULE_DEFAULTS.motifs`).
+const MOTIF_LABELS = {
+  m1_father_brother: 'Father → brother → wife',
+  m2_uncle_in_law:   'Uncle ↔ in-law',
+  m3_same_household: 'Same household',
+  m4_banner_endog:   'Banner endogamy',
+}
 
 const appState = inject('appState')
 const husband = ref(null)        // { id, ... }

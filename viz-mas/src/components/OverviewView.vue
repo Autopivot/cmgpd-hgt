@@ -138,17 +138,19 @@ function draw() {
   }
 }
 
-// Re-load when the cohort changes or any match is accepted upstream.
+// Re-load when the cohort changes or any match is accepted/restored upstream.
 watch(() => `${appState.year}|${appState.ablation}`, load)
-function onMatchAccepted() { load() }
+const reload = () => load()
 
 onMounted(() => {
   load()
-  bus.on('match-accepted', onMatchAccepted)
+  bus.on('match-accepted', reload)
+  bus.on('match-restored', reload)
   window.addEventListener('resize', draw)
 })
 onUnmounted(() => {
-  bus.off('match-accepted', onMatchAccepted)
+  bus.off('match-accepted', reload)
+  bus.off('match-restored', reload)
   window.removeEventListener('resize', draw)
 })
 </script>
