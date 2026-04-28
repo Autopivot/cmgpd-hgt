@@ -217,6 +217,38 @@ export async function getNarrative(person_id, year) {
 }
 
 /**
+ * V6 — k-hop kinship neighbourhood for a single focal person.
+ * Calls GET /kinship/{person_id}?k=... on the live backend.
+ * Returns { focal_id, nodes:[{id,sex,role}], edges:[{source,target,type}] }
+ * where `role` ∈ {'focal','kin'} and `type` ∈ {'r_fs','r_fd','r_ms','r_md','r_sib'}.
+ * On any failure (404, network, backend offline) returns the empty stub
+ * { focal_id: person_id, nodes: [], edges: [] } so V6 can still render.
+ */
+export async function getKinship(person_id, k = 1) {
+  try {
+    const r = await http.get(`/kinship/${encodeURIComponent(person_id)}`, { params: { k } })
+    return r.data
+  } catch {
+    return { focal_id: person_id, nodes: [], edges: [] }
+  }
+}
+
+/**
+ * V6 — k-hop kinship merged across multiple focal persons (e.g. husband +
+ * candidate set). Calls POST /kinship/multi with {person_ids, k}. Returns
+ * the same shape as getKinship but with merged + deduplicated nodes/edges
+ * (the backend handles dedup; client just forwards). Empty stub on error.
+ */
+export async function getKinshipMulti(person_ids, k = 1) {
+  try {
+    const r = await http.post('/kinship/multi', { person_ids, k })
+    return r.data
+  } catch {
+    return { focal_id: person_ids?.[0] ?? null, nodes: [], edges: [] }
+  }
+}
+
+/**
  * Cleaned-parquet profile for one person. Used by V4's click-popup and
  * by V5 to pre-fill the husband header before the negotiation streams.
  * Returns { id, sex, birth_year, banner_id, community_id, household_id }
