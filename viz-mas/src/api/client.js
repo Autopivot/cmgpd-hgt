@@ -333,6 +333,36 @@ export async function getShap({ year, ablation = 'ablated', pair_id } = {}) {
 }
 
 /**
+ * Kinship subgraph — single ego, k-hop person-only neighbourhood.
+ * Returns { focal_id, nodes:[{id,sex,role}], edges:[{source,target,type}] }.
+ * Returns an empty stub on backend failure so the V6 panel can render
+ * a placeholder rather than throw.
+ */
+export async function getKinship(person_id, k = 1) {
+  try {
+    const r = await http.get(`/kinship/${encodeURIComponent(person_id)}`, { params: { k } })
+    return r.data
+  } catch {
+    return { focal_id: null, nodes: [], edges: [] }
+  }
+}
+
+/**
+ * Merged k-hop kinship subgraph across multiple egos. Body:
+ *   { person_ids: [...], k }
+ * Returns the same shape as getKinship() but with deduplicated nodes
+ * and edges across all egos.
+ */
+export async function getKinshipMulti(person_ids, k = 1) {
+  try {
+    const r = await http.post('/kinship/multi', { person_ids, k })
+    return r.data
+  } catch {
+    return { focal_id: null, nodes: [], edges: [] }
+  }
+}
+
+/**
  * View 6 — rule weights (macro/micro motifs). Two cooperating shapes:
  *   `macro`  — array form, used by V6's UI rendering loop
  *   `macro_obj` — object form keyed by `id`, used by SHAP/agent computation
