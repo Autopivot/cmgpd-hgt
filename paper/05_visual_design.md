@@ -4,7 +4,7 @@
 
 **[SYSTEM]** is laid out as a 3-column, 2-row grid of six linked views, backed by a FastAPI server with WebSocket fan-out for the agent stream (Fig. 1). The frontend is a Vue 3 + Vite single-page application that holds an in-memory cohort context and routes selection events through a shared bus (`hex-select`, `person-selected`, `match-accepted`, `match-restored`). The backend caches the cleaned CMGPD-LN parquet, the HGT-trained model checkpoint, and DS0003-derived per-person life histories.
 
-> **Figure 1 (caption).** [SYSTEM] at a glance. Six linked views (V1–V6) cooperate through a shared event bus. V3's honeycomb cohort canvas drives selection; V4 unfolds the bipartite detail; V5 hosts the six-round agent negotiation; V2 records every commit with a multi-label provenance tag; V1 tracks the running MAS recall@1 against the static HGT baseline; V6 lets the analyst tune macro-feature weights and motif toggles. Every commit is one-click reversible.
+> **Figure 1 (caption).** [SYSTEM] at a glance. Six linked views (V1–V6) cooperate through a shared event bus. V3's honeycomb cohort canvas drives selection; V4 unfolds the bipartite detail; V5 hosts the six-round agent negotiation; V2 records every commit with a multi-label provenance tag; V1 tracks the running MAS recall@1 against the static HGT baseline; V6 surfaces the kinship neighbourhood of the husband alongside that of every top-$K$ candidate so the analyst can see, at a glance, what immediate-family social context each agent is reasoning over. Every commit is one-click reversible.
 
 ## 5.2 V1 — Acceptance curve and ablation diagnostic
 
@@ -181,9 +181,23 @@ The candidate grid below renders one `CandidateCard` per top-K wife, each with p
 
 A *hint console* above the grid accepts free-form messages addressed to `@everyone`, `@target`, or specific candidates by ID; submitted hints land in a per-husband `asyncio.Queue` on the server, are drained between rounds, and are interpolated into the next round's prompt as system context.
 
-## 5.7 V6 — Macro and motif rule injector
+## 5.7 V6 — Kinship neighbourhood graph
 
-V6 closes the steering loop. The macro half exposes a small set of sliders (paternal-lineage importance, sibling overlap, household share, banner match, macro era) that re-weight the SEAL motif pre-prior. The motif half exposes four boolean toggles for $\mathsf{m}_1$–$\mathsf{m}_4$, letting the analyst suppress specific motifs from the persona prompt (e.g., to test whether a match still holds without the same-household evidence). A scalar input for $\lambda$ in Eq. 1 is also exposed, enabling sensitivity exploration on the gap penalty.
+V6's purpose is to make the *immediate-family social context* of every actor in the current negotiation directly visible. As the analyst drives V4 → V5, V6 displays the husband currently loaded in V4 together with the top-$K$ candidates surfaced in V5, each surrounded by their one-hop kin, so it is obvious at a glance whether two candidates share a father, a mother, or a sibling, and whether the husband's family overlaps any candidate's family.
+
+*Subgraph definition.* For every focal person $p \in \{x\} \cup \{y_1, \ldots, y_K\}$ (the husband and the $K$ candidates) we extract the $k = 1$ ego-graph restricted to `person` nodes and to the kinship edge subset
+
+$$\mathcal{E}_{\mathrm{kin}} \;=\; \{r_{fs},\, r_{fd},\, r_{ms},\, r_{md},\, r_{sib}\},$$
+
+i.e. paternal son / daughter, maternal son / daughter, and sibling. Higher $k$ is deferred to future work — at $k = 1$ the per-focal neighbourhood is small (parents, children, siblings: typically a single-digit count of nodes) so a $1 + K$ ego union can be laid out and animated interactively without aggregation. The subgraphs are rendered as the *union* of their ego-graphs in a single force-directed canvas; shared kin (e.g., two candidates who share a father) appear once, as the connecting node, which is precisely the relational fact V6 is designed to make legible.
+
+*Visual encoding.* The husband node is filled green at radius $r = 9$; candidate nodes are filled amber at $r = 8$ and carry a stroke ring to distinguish them from ordinary kin; all other person nodes (parents, siblings, children) are light grey at $r = 5$. Edges are colour-neutral grey but stroke-styled by kinship channel: paternal edges ($r_{fs}, r_{fd}$) are *solid*, maternal edges ($r_{ms}, r_{md}$) are *dashed*, and sibling edges ($r_{sib}$) are *dotted*. On `match-accepted`, an additional $r_{hw}$ edge is drawn between the husband and the accepted candidate, in the canonical [SYSTEM] terracotta `#993c1d` at stroke width 2, so the committed marriage stands out from the kinship scaffolding.
+
+*Layout and interaction.* The canvas runs a d3-force simulation (link distance ≈ 30 px, charge ≈ −80, plus a centring force and a collision force) restarted with $\alpha = 0.3$ on every cohort-context update for warm restart. The analyst can drag a node to pin it (d3-drag freezes the node on release; double-click releases it back to the simulation) and zoom the canvas with the mousewheel and pan by dragging empty space, both routed through `d3.zoom` with scale extent $[0.3, 4]$. Hovering a node reveals a tooltip with `{id, sex, role, relation-to-focal}`.
+
+*Accept cascade.* When the analyst accepts a candidate $y_i$ in V5, the bus emits `match-accepted`; V6 inserts the new $r_{hw}$ edge as described above and runs a 200 ms d3 transition fading every node and edge that belongs *only* to a non-winning candidate's ego-graph to opacity 0.25, leaving the husband's ego and the winner's ego at full opacity. On `match-restored` the symmetric reverse runs: the $r_{hw}$ edge is removed and all opacities transition back to 1.0. The result is that V6 acts as a real-time *witness* to the negotiation outcome: which family was joined, and which families were not.
+
+*Future work.* The current implementation is fixed at $k = 1$; arbitrary $k$ (multi-hop kinship) is left to a follow-up release because the layout and the colour-by-relation legend both require redesign once second-degree kin (grandparents, cousins) and household / community nodes are admitted.
 
 ## 5.8 Linked interaction model
 

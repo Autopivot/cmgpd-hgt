@@ -4,7 +4,7 @@
 
 **[SYSTEM]** 以 3 列 2 行的网格布局组织六个相互链接的视图，由一台 FastAPI 服务器在后端支撑，并通过 WebSocket fan-out 向前端推送 agent 流（图 1）。前端是一个 Vue 3 + Vite 单页应用，持有一份内存中的队列上下文（cohort context），并通过共享总线（`hex-select`、`person-selected`、`match-accepted`、`match-restored`）路由选择事件。后端则缓存清洗后的 CMGPD-LN parquet、HGT 训练得到的模型 checkpoint，以及由 DS0003 派生的按人 life history。
 
-> **图 1（题注）。** [SYSTEM] 一览。六个相互链接的视图（V1–V6）通过共享事件总线协同：V3 的 honeycomb 队列画布驱动选择；V4 展开二部细节；V5 承载六回合 agent negotiation；V2 用多标签 provenance 标签记录每一次提交；V1 跟踪运行中的 MAS recall@1 相对静态 HGT 基线的变化；V6 让分析者调整宏观特征权重与 motif 开关。每一次提交都可一键回滚。
+> **图 1（题注）。** [SYSTEM] 一览。六个相互链接的视图（V1–V6）通过共享事件总线协同：V3 的 honeycomb 队列画布驱动选择；V4 展开二部细节；V5 承载六回合 agent negotiation；V2 用多标签 provenance 标签记录每一次提交；V1 跟踪运行中的 MAS recall@1 相对静态 HGT 基线的变化；V6 把丈夫与每一位 top-$K$ 候选的近亲族群一并呈现，让分析者一眼看清每个 agent 正在推理的直系家庭社会语境。每一次提交都可一键回滚。
 
 ## 5.2 V1 —— Acceptance curve 与消融诊断
 
@@ -181,9 +181,23 @@ V5 是 [SYSTEM] 的审议核心，也是落实 DG3 与 DG4 的表面。在加载
 
 网格上方的 *hint console* 接受任意自由文本消息，可寻址到 `@everyone`、`@target` 或按 ID 寻址到具体候选；提交的 hint 落入服务器端按丈夫维护的 `asyncio.Queue`，在每回合之间被清空（drained），并作为系统上下文插值进入下一回合的 prompt。
 
-## 5.7 V6 —— Macro 与 motif 规则注入器
+## 5.7 V6 —— 亲属邻域图（kinship neighbourhood graph）
 
-V6 闭合了引导回路。Macro 半区暴露一组小型滑杆（paternal-lineage importance、sibling overlap、household share、banner match、macro era），用以重新加权 SEAL motif 的预先 prior。Motif 半区为 $\mathsf{m}_1$–$\mathsf{m}_4$ 暴露四个布尔开关，让分析者从 persona prompt 中抑制特定 motif（例如，测试在没有 same-household 证据时匹配是否仍然成立）。同时还为公式 1 中的 $\lambda$ 暴露一个标量输入，便于在 gap penalty 上做敏感性探索。
+V6 的目的是把当前协商中每一位行动者的 *直系家庭社会语境* 直接显式化。当分析者沿 V4 → V5 推进时，V6 同时显示 V4 中已加载的丈夫与 V5 中给出的 top-$K$ 候选，并在每一位焦点人物外圈出其一跳亲属，便于一眼判断两位候选是否同父、同母或互为兄弟姐妹，以及丈夫家与任一候选家是否存在重合。
+
+*子图定义。* 对每一位焦点人物 $p \in \{x\} \cup \{y_1, \ldots, y_K\}$（丈夫与 $K$ 位候选），我们抽取 $k = 1$ 的 ego-graph，把节点限制为 `person`，把边限制为亲属边集
+
+$$\mathcal{E}_{\mathrm{kin}} \;=\; \{r_{fs},\, r_{fd},\, r_{ms},\, r_{md},\, r_{sib}\},$$
+
+即父系 son / daughter、母系 son / daughter 与兄弟姐妹边。更高的 $k$ 留作未来工作 —— 在 $k = 1$ 时单焦点邻域规模很小（父母、子女、兄弟姐妹通常是一位数量级），因此 $1 + K$ 个 ego 的并集可以被放在单一 force-directed 画布上做交互式布局与动画，无需聚合。子图以 ego-graph 的 *并集* 渲染：被多人共享的亲属（例如同父的两位候选）只出现一次，作为连接节点 —— 这正是 V6 想让人看清的关系事实。
+
+*视觉编码。* 丈夫节点为绿色实心圆，半径 $r = 9$；候选节点为琥珀色实心圆，$r = 8$，外加一圈描边以与普通亲属节点区分；其他人物节点（父母、兄弟姐妹、子女）为浅灰色实心圆，$r = 5$。边采用中性灰色，但按亲属通道做线型区分：父系边（$r_{fs}, r_{fd}$）为 *实线*，母系边（$r_{ms}, r_{md}$）为 *虚线*，兄弟姐妹边（$r_{sib}$）为 *点线*。在 `match-accepted` 时，会在丈夫与已接受候选之间额外画一条 $r_{hw}$ 边，使用 [SYSTEM] 标准的赭红 `#993c1d`、stroke 宽度 2，让已提交的婚姻边从亲属骨架中突显出来。
+
+*布局与交互。* 画布运行 d3-force 模拟（link distance ≈ 30 px、charge ≈ −80，再加居中力与碰撞力），每次 cohort-context 更新时以 $\alpha = 0.3$ 做暖重启。分析者可拖拽节点以钉住（d3-drag 在释放时把节点冻结，双击解除冻结回到模拟）；可用鼠标滚轮缩放、在空白处拖拽平移，两者都经由 `d3.zoom` 处理，缩放范围限制在 $[0.3, 4]$。悬停节点会显示 `{id, sex, role, relation-to-focal}` 的 tooltip。
+
+*接受级联。* 当分析者在 V5 接受某位候选 $y_i$ 时，总线发出 `match-accepted`；V6 按上述方式插入新的 $r_{hw}$ 边，并以 200 ms 的 d3 过渡把所有 *仅* 属于非胜出候选 ego-graph 的节点与边淡出至 opacity 0.25，同时保持丈夫与胜出者的 ego 在满不透明。`match-restored` 时执行对称反向：移除 $r_{hw}$ 边，并把所有不透明度过渡回 1.0。这样 V6 就成为协商结果的实时 *见证* —— 哪一家的家被并入，哪几家没有。
+
+*未来工作。* 当前实现固定 $k = 1$；任意 $k$（多跳亲属）留待后续版本，因为一旦纳入二度亲属（祖辈、表亲）以及 household / community 节点，布局与按关系着色的图例都需要重新设计。
 
 ## 5.8 联动交互模型
 
