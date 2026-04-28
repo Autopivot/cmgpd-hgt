@@ -266,6 +266,24 @@ def api_profile(person_id: str):
     return mas_get_profile(person_id)
 
 
+@app.get("/api/seal/{husband_id}/{wife_id}")
+def api_seal_subgraph(husband_id: str, wife_id: str):
+    """Return the SEAL motif subgraph for a (husband, wife) pair.
+
+    Currently a STUB — returns one of four canonical motif exemplars
+    deterministically per pair. Schema v1; see `server/data/seal_loader.py`
+    for the strict output contract and the migration notes for the real
+    DRNL+motif-classification pipeline.
+
+    Backs V6's per-edge sub-window: the user clicks any r_hw edge
+    (potential dashed or confirmed solid) and gets a focused mini-graph
+    showing the structural pattern that justifies (or would justify) the
+    match.
+    """
+    from .data.seal_loader import get_seal_subgraph
+    return get_seal_subgraph(husband_id, wife_id)
+
+
 @app.get("/api/shap/{pair_id}")
 async def api_shap(pair_id: int, year: int, ablation: str = "ablated"):
     c = load_cohort(year, ablation)
