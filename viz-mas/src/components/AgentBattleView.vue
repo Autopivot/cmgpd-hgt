@@ -107,6 +107,21 @@
           </div>
           <div v-if="!systemLog.length" class="muted tiny" style="padding:4px 6px">no messages</div>
         </div>
+        <!-- Directives applied by the natural-language router. Populated by
+             nlpParseHint() — empty when only formal `@target: verb` hints
+             have been used. -->
+        <div v-if="directives.length" class="directives-panel">
+          <div class="tiny muted" style="padding:2px 6px">applied directives</div>
+          <ul class="directives-list">
+            <li v-for="(d, i) in directives" :key="i" class="directive-row tiny">
+              <span class="t muted">{{ d.ts }}</span>
+              <span class="m"><b>{{ d.action }}</b>
+                <span v-if="d.target"> · {{ d.target }}</span>
+                <span class="muted"> — {{ d.summary }}</span>
+              </span>
+            </li>
+          </ul>
+        </div>
         <div class="hint-input">
           <span class="verbs">
             <button class="verb" v-for="v in verbs" :key="v" @click="appendVerb(v)">{{ v }}</button>
@@ -169,7 +184,7 @@
 import { ref, inject, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import {
   startNegotiation, openNegotiationStream, sendNegotiationHint, overrideMatch, getPair,
-  advanceRound, getNarrative,
+  advanceRound, getNarrative, nlpParseHint,
 } from '../api/client.js'
 import bus from '../utils/eventbus.js'
 import CandidateCard from './CandidateCard.vue'
@@ -190,6 +205,11 @@ const candidates = ref([])       // raw candidates from "stage:filter"
 const agents = ref([])           // per-candidate cards (mirrors candidates + LLM scores)
 const finalRanking = ref(null)
 const accepted = ref(null)
+// Structured directives surfaced by the natural-language hint router. Each
+// entry is { action, target, params, raw } and is appended on every
+// successful /api/hint/parse fallback. Rendered in the V5 console so the
+// user can see what their freeform text actually got translated into.
+const directives = ref([])
 const running = ref(false)
 const streamState = ref('idle')
 const systemLog = ref([])
@@ -527,6 +547,25 @@ async function approveAndAdvance() {
   }
 }
 
+// Compose a short human-readable summary of an NLP-router action, e.g.
+//   { action: 'eliminate', target: 'c-P165718' }                 → "eliminate c-P165718"
+//   { action: 'modify_persona_field',
+//     target: 'c-P93553',
+//     params: { field: 'banner', value: 3 } }                    → "modify banner of c-P93553 → 3"
+function formatDirective(d) {
+  if (!d || typeof d !== 'object') return String(d)
+  const act = d.action || d.verb || 'op'
+  const tgt = d.target || d.subject || ''
+  const p = d.params || {}
+  if (act === 'modify_persona_field' && p.field !== undefined) {
+    return `modify ${p.field} of ${tgt} → ${p.value ?? ''}`
+  }
+  const extras = Object.keys(p).length
+    ? ' ' + Object.entries(p).map(([k, v]) => `${k}=${v}`).join(' ')
+    : ''
+  return `${act}${tgt ? ' ' + tgt : ''}${extras}`.trim()
+}
+
 async function sendHint() {
   const text = hint.value.trim()
   if (!text || !husband.value) return
@@ -540,10 +579,58 @@ async function sendHint() {
     else if (verb === 'boost' && a.target_score != null) a.target_score = Math.min(10, a.target_score + 0.5)
     else if (verb === 'penalise' && a.target_score != null) a.target_score = Math.max(0, a.target_score - 0.5)
   }
-  try { await sendNegotiationHint(husband.value.id, text, role, currentRound.value) }
-  catch (e) { logSys(`hint POST failed: ${e.message || e}`, 'err') }
-  hint.value = ''
+
+  // Formal-grammar fast path: a recognised verb (boost/penalise/eliminate/
+  // accept) is enough to treat the input as a structural directive and
+  // send it straight to the negotiator, skipping the LLM round-trip.
+  const formalMatched = verb !== ''
+
+  if (formalMatched) {
+    try { await sendNegotiationHint(husband.value.id, text, role, currentRound.value) }
+    catch (e) { logSys(`hint POST failed: ${e.message || e}`, 'err') }
+    hint.value = ''
+    logSys(`<b>hint</b> [${role}] ${text}`)
+    return
+  }
+
+  // Natural-language fallback: ask the backend router to translate the
+  // freeform text into structured actions, then surface each one in the
+  // chat log + directives list. On any failure, fall back to the legacy
+  // raw-text hint so the negotiator still hears the user.
   logSys(`<b>hint</b> [${role}] ${text}`)
+  try {
+    const ctx = {
+      candidate_ids: candidates.value.map(c => c.id),
+      current_round: currentRound.value,
+    }
+    const resp = await nlpParseHint(husband.value.id, text, ctx)
+    const actions = Array.isArray(resp?.actions) ? resp.actions : []
+    if (actions.length === 0) {
+      logSys('[router] no actions returned — forwarding as raw chat', 'sys')
+      try { await sendNegotiationHint(husband.value.id, text, role, currentRound.value) }
+      catch (e) { logSys(`hint POST failed: ${e.message || e}`, 'err') }
+    } else {
+      for (const a of actions) {
+        const summary = formatDirective(a)
+        logSys(`[router] ${summary}`, 'ok')
+        directives.value.push({
+          ts: new Date().toLocaleTimeString(),
+          action: a.action || a.verb || 'op',
+          target: a.target || a.subject || '',
+          params: a.params || {},
+          summary,
+          raw: text,
+        })
+      }
+    }
+  } catch (e) {
+    logSys(`[router] could not parse: ${e.message || e}`, 'err')
+    // Best-effort: still forward the raw text so the negotiator gets the
+    // user's intent even if the router is offline.
+    try { await sendNegotiationHint(husband.value.id, text, role, currentRound.value) }
+    catch (err) { logSys(`hint POST failed: ${err.message || err}`, 'err') }
+  }
+  hint.value = ''
 }
 
 function boost(a, delta) {
@@ -586,6 +673,7 @@ watch(() => `${appState.year}|${appState.ablation}`, () => {
   agents.value = []
   finalRanking.value = null
   accepted.value = null
+  directives.value = []
   // V5 → V6 contract: cohort context resets when the user changes year/ablation.
   bus.emit('cohort-context', { husband_id: null, candidate_ids: [] })
   closeWS()
@@ -622,6 +710,17 @@ onUnmounted(() => {
 .log-line.lvl-err .m { color: #a40000; }
 .log-line.lvl-ok .m { color: #0f6e56; }
 .log-line.lvl-sys .m { color: #555; font-style: italic; }
+.directives-panel {
+  margin-top: 4px; background: #fffbe9; border: 1px solid #e3d27a;
+  border-radius: 3px; max-height: 80px; overflow: auto;
+}
+.directives-list { list-style: none; margin: 0; padding: 2px 6px; }
+.directive-row {
+  display: flex; gap: 6px; padding: 1px 0;
+  font-family: "Monaco", monospace; font-size: 10px;
+}
+.directive-row .t { flex: 0 0 auto; }
+.directive-row .m { flex: 1 1 auto; }
 .hint-input {
   display: flex; align-items: center; gap: 4px; margin-top: 4px;
   flex-wrap: wrap;

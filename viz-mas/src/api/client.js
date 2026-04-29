@@ -185,6 +185,30 @@ export function openNegotiationStream(husband_id) {
   return new WebSocket(`${wsProto}://${location.host}/api/negotiate/${encodeURIComponent(husband_id)}/stream`)
 }
 
+/**
+ * Natural-language hint fallback. When the V5 hint console can't parse a
+ * formal `@target: verb` directive, the freeform text is forwarded here so
+ * the backend's LLM router can translate it into a list of structured
+ * actions ({ action, target, params, ... }).
+ *
+ * `context` is an arbitrary object — V5 currently sends
+ * `{ candidate_ids, current_round }` so the router can resolve pronouns
+ * ("the top candidate", "him") against the active cohort.
+ */
+export async function nlpParseHint(sessionId, freeText, context) {
+  try {
+    const r = await http.post('/hint/parse', {
+      session_id: sessionId,
+      free_text: freeText,
+      context,
+    })
+    return r.data
+  } catch (e) {
+    const status = e?.response?.status ?? '???'
+    throw new Error(`hint/parse ${status}`)
+  }
+}
+
 export async function sendNegotiationHint(husband_id, text, role = 'all', round = 0) {
   const r = await http.post(`/negotiate/${encodeURIComponent(husband_id)}/hint`, {
     text, role, round,
