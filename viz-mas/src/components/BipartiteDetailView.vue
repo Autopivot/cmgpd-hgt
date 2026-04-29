@@ -1,7 +1,7 @@
 <template>
   <div class="panel">
     <div class="panel-head">
-      <span>V4 · Bipartite Detail</span>
+      <span>V4: Bipartite View</span>
       <span class="tiny muted">{{ pairsToShow.length }} pair(s) · click a person</span>
       <span class="batch-ctl tiny" v-if="pairsToShow.length">
         gap ≥

@@ -232,7 +232,7 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 3fr 5fr 4fr;
+  grid-template-columns: 2.4fr 5fr 4.6fr;
   gap: 8px;
   padding: 8px;
 }
@@ -246,8 +246,8 @@ onUnmounted(() => {
 .cell { min-height: 0; flex: 1; }
 .col-left .cell-upper { flex: 0 0 40%; }
 .col-left .cell-lower { flex: 1; }
-.col-mid .cell-upper { flex: 0 0 62%; }
+.col-mid .cell-upper { flex: 0 0 75%; }
 .col-mid .cell-lower { flex: 1; }
-.col-right .cell-upper { flex: 0 0 55%; }
+.col-right .cell-upper { flex: 0 0 62%; }
 .col-right .cell-lower { flex: 1; }
 </style>

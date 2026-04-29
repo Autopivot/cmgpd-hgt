@@ -127,7 +127,7 @@
 | Key | 论文中代指的内容 | 替换路径 |
 |---|---|---|
 | `cmgpd-ln-2010` | CMGPD-LN ICPSR 27063 数据集描述 | DOI 10.3886/ICPSR27063 + Lee & Campbell 描述论文 |
-| `wang2007muxia` | 母家史学 | 占位 —— 需找一篇关于 母家 在晚期帝制中国史中的同行评议工作 |
+| `wang2007mujia` | 母家史学 | 占位 —— 需找一篇关于 母家 在晚期帝制中国史中的同行评议工作 |
 | `mann2002precious` | 晚清女性史 | 极可能是 Mann *Precious Records* (1997) —— 需核实年份与来源 |
 | `hu2020hgt` | HGT —— Heterogeneous Graph Transformer | WWW 2020；可程序化拉 DOI |
 | `zhang2018seal` | SEAL link prediction | NeurIPS 2018；可获取 |

@@ -1,7 +1,7 @@
 <template>
   <div class="panel">
     <div class="panel-head">
-      <span>V3 · Relation Embedding Space</span>
+      <span>V3: Embedding View</span>
       <span class="legend-row">
         <span class="score-legend tiny" title="ψ(m,w_true) − ψ(m,w_best_neg) for positives; ψ(m,w_neg) − ψ(m,w_true) for hard-negs. Anchors saturate at ±2 logits.">
           <span class="lbl">score gap</span>

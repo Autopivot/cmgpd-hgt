@@ -1,7 +1,7 @@
 <template>
   <div class="panel">
     <div class="panel-head">
-      <span>V1 · Overview · MAS Acceptance Curve</span>
+      <span>V1: Overview</span>
       <span class="tiny muted">{{ statusLine }}</span>
       <button class="btn ghost tiny" :title="resetTitle" @click="reset">↺ reset</button>
       <button class="fs-btn" @click="bus.emit('full-screen', 'v1')" title="Full screen">⛶</button>

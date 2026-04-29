@@ -1,7 +1,7 @@
 <template>
   <div class="panel">
     <div class="panel-head">
-      <span>V6 · Rule Injector · Macro × Motifs</span>
+      <span>V6: Rules View</span>
       <span class="tiny muted" :class="{ ok: synced }">{{ syncStatus }}</span>
       <button class="fs-btn" @click="bus.emit('full-screen', 'v6')" title="Full screen">⛶</button>
     </div>

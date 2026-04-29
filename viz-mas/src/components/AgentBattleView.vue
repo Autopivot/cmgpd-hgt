@@ -1,7 +1,7 @@
 <template>
   <div class="panel battle">
     <div class="panel-head">
-      <span>V5 · Agent Arena · MAS Negotiation</span>
+      <span>V5: MAS View</span>
       <span class="actions">
         <span class="tiny muted" v-if="husband">t-{{ husband.id }}</span>
         <span v-if="currentRound > 0" class="round-chip tiny" :class="{ paused: isPaused }">

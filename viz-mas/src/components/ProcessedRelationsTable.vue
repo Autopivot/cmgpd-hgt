@@ -1,7 +1,7 @@
 <template>
   <div class="panel">
     <div class="panel-head">
-      <span>V2 · Processed Pairs · {{ appState.year }} ({{ appState.ablation }})</span>
+      <span>V2: Process View</span>
       <span class="tiny muted">{{ rows.length }} accepted</span>
       <button class="fs-btn" @click="bus.emit('full-screen', 'v2')" title="Full screen">⛶</button>
     </div>
