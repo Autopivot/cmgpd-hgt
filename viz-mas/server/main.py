@@ -267,17 +267,22 @@ def api_profile(person_id: str):
 
 
 @app.get("/api/kinship/{person_id}")
-def api_kinship(person_id: str, k: int = 1):
+def api_kinship(person_id: str, k: int = 1, hide_children: bool = False):
     """Return the focal person's k-hop person-only family subgraph
     (parents, children, siblings) for the V6 candidate-graph UI.
-    Output ids always carry the "P" prefix."""
+    Output ids always carry the "P" prefix.
+
+    ``hide_children=true`` suppresses the focal→child edges (V6 sets
+    this so a candidate sharing a child with the husband doesn't
+    leak the matching answer)."""
     from .data.kinship_loader import khop_kinship
-    return khop_kinship(person_id, k=k)
+    return khop_kinship(person_id, k=k, hide_children=hide_children)
 
 
 class _KinshipMultiBody(BaseModel):
     person_ids: list[str]
     k: int = 1
+    hide_children: bool = False
 
 
 @app.post("/api/kinship/multi")
@@ -285,9 +290,10 @@ def api_kinship_multi(body: _KinshipMultiBody):
     """Batched kinship lookup: merges the per-person subgraphs of every
     id in `person_ids`, deduplicating nodes by id and edges by
     (source, target, type). Used by V6 to render husband + top-K
-    candidates in a single canvas."""
+    candidates in a single canvas. Set ``hide_children=true`` (V6 always
+    does) to suppress focal→child edges that would leak the spouse."""
     from .data.kinship_loader import khop_kinship_multi
-    return khop_kinship_multi(body.person_ids, k=body.k)
+    return khop_kinship_multi(body.person_ids, k=body.k, hide_children=body.hide_children)
 
 
 @app.get("/api/seal/{husband_id}/{wife_id}")

@@ -117,7 +117,7 @@ def _focal_only(person_id: str) -> dict:
     }
 
 
-def khop_kinship(person_id: str, k: int = 1) -> dict:
+def khop_kinship(person_id: str, k: int = 1, hide_children: bool = False) -> dict:
     """Return a person's k-hop person-only family subgraph.
 
     For k=1 includes parents (FATHER_ID, MOTHER_ID), children (reverse
@@ -125,6 +125,13 @@ def khop_kinship(person_id: str, k: int = 1) -> dict:
     excluding the focal). Edge types are `r_fs` / `r_fd` / `r_ms` / `r_md`
     for parent→child and `r_sib` for the undirected sibling pair (emitted
     once per pair). Output ids always carry the "P" prefix.
+
+    ``hide_children=True`` suppresses any edge where the focal is the
+    parent (source of `r_f*` / `r_m*`) and the child node it would have
+    introduced. This is the V6 setting: showing the focal's children
+    would reveal who the real wife is for any candidate that already
+    shares a child with the husband — a one-look giveaway of the
+    matching task.
     """
     _load()
     raw = _strip_prefix(person_id)
@@ -151,14 +158,14 @@ def khop_kinship(person_id: str, k: int = 1) -> dict:
         edges.append({"source": _add_prefix(mother), "target": _add_prefix(raw),
                       "type": _edge_type(mother, raw)})
 
-    # Focal → children. A child can appear via either father_to_children
-    # or mother_to_children depending on the focal's sex; the union covers
-    # both branches in case of inconsistent rows.
-    children = set(_father_to_children.get(raw, [])) | set(_mother_to_children.get(raw, []))
-    for child in sorted(children):
-        _add_kin(child)
-        edges.append({"source": _add_prefix(raw), "target": _add_prefix(child),
-                      "type": _edge_type(raw, child)})
+    # Focal → children. Skipped under ``hide_children`` because shared
+    # children are a deterministic giveaway of the focal's spouse.
+    if not hide_children:
+        children = set(_father_to_children.get(raw, [])) | set(_mother_to_children.get(raw, []))
+        for child in sorted(children):
+            _add_kin(child)
+            edges.append({"source": _add_prefix(raw), "target": _add_prefix(child),
+                          "type": _edge_type(raw, child)})
 
     # Siblings: union of (father's other children) and (mother's other children).
     sibs: set[str] = set()
@@ -180,16 +187,19 @@ def khop_kinship(person_id: str, k: int = 1) -> dict:
     }
 
 
-def khop_kinship_multi(person_ids: list[str], k: int = 1) -> dict:
+def khop_kinship_multi(person_ids: list[str], k: int = 1, hide_children: bool = False) -> dict:
     """Merge per-person k-hop subgraphs, deduplicating nodes by id and
     edges by (source, target, type). Useful for V6's "husband + top-K
-    candidates" panel where overlapping kin should appear once."""
+    candidates" panel where overlapping kin should appear once.
+
+    ``hide_children`` is forwarded to each per-focal call (see
+    ``khop_kinship``)."""
     nodes: dict[str, dict] = {}
     edges: dict[tuple[str, str, str], dict] = {}
     focal_ids: list[str] = []
 
     for pid in person_ids:
-        sub = khop_kinship(pid, k=k)
+        sub = khop_kinship(pid, k=k, hide_children=hide_children)
         focal_ids.append(sub["focal_id"])
         for n in sub["nodes"]:
             nid = n["id"]

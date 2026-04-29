@@ -177,10 +177,15 @@ async function onCohortContext({ husband_id, candidate_ids } = {}) {
   // Fetch each ego separately so we can stamp `roleByNode` with the right
   // owning ego (husband vs candidate-XX). The /kinship/multi endpoint
   // dedupes nodes which loses ego provenance — single fetches preserve it.
+  // hide_children=true: showing the focal's children would leak the
+  // matching answer — any candidate sharing a child with the husband is
+  // obviously the real wife. The endpoint suppresses focal→child edges.
   const egos = await Promise.all(
     ids.map(async pid => {
       try {
-        const r = await http.get(`/kinship/${encodeURIComponent(pid)}`, { params: { k: 1 } })
+        const r = await http.get(`/kinship/${encodeURIComponent(pid)}`, {
+          params: { k: 1, hide_children: true },
+        })
         return { pid, data: r.data }
       } catch {
         return { pid, data: { focal_id: pid, nodes: [{ id: pid, role: 'focal' }], edges: [] } }
@@ -216,6 +221,20 @@ async function onCohortContext({ husband_id, candidate_ids } = {}) {
       out_edges.push({ source: e.source, target: e.target, type: e.type })
     }
   }
+  // Belt-and-braces filter: even with `hide_children=true`, the merge of
+  // ego-graphs can still introduce focal→child edges via *another* ego's
+  // parent→focal edge (e.g., querying candidate P5's parents brings back
+  // an edge whose source is the husband P3). Drop any kinship parent→child
+  // edge whose source is a focal (husband or candidate); this is the only
+  // way to guarantee the matching task isn't trivially leaked by data.
+  const focalSet = new Set([husband_id, ...candidateIds.value])
+  const PARENT_EDGE_TYPES = new Set(['r_fs', 'r_fd', 'r_ms', 'r_md'])
+  const filteredEdges = out_edges.filter(e => {
+    const sId = typeof e.source === 'object' ? e.source.id : e.source
+    return !(focalSet.has(sId) && PARENT_EDGE_TYPES.has(e.type))
+  })
+  out_edges.length = 0
+  out_edges.push(...filteredEdges)
   // Add a potential (dashed) r_hw edge from husband to each candidate.
   // These materialise the moment V5 publishes its candidate set, so the
   // user immediately sees "these are the proposals on the table". On
