@@ -22,6 +22,28 @@
         load a husband in V5 (click in V3 / V4 / V2) to see his and the candidates' k=1 kinship neighbourhoods
       </div>
 
+      <!-- Legend (collapsible) -->
+      <div class="legend" :class="{ collapsed: !legendOpen }">
+        <div class="legend-head" @click="legendOpen = !legendOpen">
+          <span class="caret">{{ legendOpen ? '▾' : '▸' }}</span>
+          <span class="tiny">legend</span>
+        </div>
+        <div v-if="legendOpen" class="legend-body">
+          <div class="legend-section">
+            <div class="legend-row"><span class="dot" style="background:#0f6e56"></span><span class="tiny">husband (focal)</span></div>
+            <div class="legend-row"><span class="dot" style="background:#d4a85d;border:1px solid #1a1a1a"></span><span class="tiny">candidate wife</span></div>
+            <div class="legend-row"><span class="dot small" style="background:#cfcfcf"></span><span class="tiny">kin (parent / child / sibling)</span></div>
+          </div>
+          <div class="legend-section">
+            <div class="legend-row"><svg width="28" height="6"><line x1="2" y1="3" x2="26" y2="3" stroke="#666" stroke-width="1"/></svg><span class="tiny">paternal (r_fs / r_fd)</span></div>
+            <div class="legend-row"><svg width="28" height="6"><line x1="2" y1="3" x2="26" y2="3" stroke="#666" stroke-width="1" stroke-dasharray="3 2"/></svg><span class="tiny">maternal (r_ms / r_md)</span></div>
+            <div class="legend-row"><svg width="28" height="6"><line x1="2" y1="3" x2="26" y2="3" stroke="#888" stroke-width="1" stroke-dasharray="1 2"/></svg><span class="tiny">sibling (r_sib)</span></div>
+            <div class="legend-row"><svg width="28" height="6"><line x1="2" y1="3" x2="26" y2="3" stroke="#c97a5a" stroke-width="1.6" stroke-dasharray="5 4"/></svg><span class="tiny">potential marriage</span></div>
+            <div class="legend-row"><svg width="28" height="6"><line x1="2" y1="3" x2="26" y2="3" stroke="#993c1d" stroke-width="2"/></svg><span class="tiny">accepted marriage (click for SEAL)</span></div>
+          </div>
+        </div>
+      </div>
+
       <!-- SEAL motif subwindow: opens on r_hw edge click -->
       <div v-if="sealOpen" class="seal-popover" @click.self="sealOpen = false">
         <div class="seal-card">
@@ -97,6 +119,9 @@ const sealData = ref(null)        // schema v1 from /api/seal/{h}/{w}
 const sealStub = ref(true)        // toggled false once a non-stub backend ships
 const sealSvgRef = ref(null)
 let sealSimulation = null
+
+// ── Legend collapsible state ────────────────────────────────────────────
+const legendOpen = ref(true)
 
 const headerChip = computed(() => {
   if (!husbandId.value) return 'idle'
@@ -535,17 +560,19 @@ defineExpose({ nodes, edges, roleByNode })
 }
 g.node { cursor: pointer; }
 
+// Use viewport-fixed positioning so the popover overlays the entire app,
+// not just V6's small panel cell — otherwise the card is clipped/invisible.
 .seal-popover {
-  position: absolute; inset: 0;
-  background: rgba(20, 18, 14, 0.32);
+  position: fixed; inset: 0;
+  background: rgba(20, 18, 14, 0.42);
   display: grid; place-items: center;
-  z-index: 20;
+  z-index: 1000;
 }
 .seal-card {
-  width: min(440px, 92%); height: min(340px, 85%);
+  width: min(640px, 92vw); height: min(480px, 80vh);
   background: #fff;
   border: 1px solid #888; border-radius: 4px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
   display: flex; flex-direction: column;
 }
 .seal-head {
@@ -566,4 +593,43 @@ g.node { cursor: pointer; }
 .seal-body { flex: 1 1 auto; display: flex; flex-direction: column; padding: 4px; min-height: 0; }
 .seal-canvas { flex: 1 1 auto; width: 100%; }
 .seal-meta { padding: 4px 6px; border-top: 1px solid #f0f0f0; }
+
+// Legend — top-left of the canvas, semi-transparent so it doesn't hide
+// nodes behind it. Collapses to a tiny header strip on click.
+.legend {
+  position: absolute; top: 6px; left: 6px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #d8d4c8; border-radius: 3px;
+  padding: 4px 6px;
+  font-family: Monaco, monospace;
+  pointer-events: auto;
+  user-select: none;
+  max-width: 220px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+.legend.collapsed { padding: 2px 6px; }
+.legend-head {
+  display: flex; align-items: center; gap: 4px;
+  cursor: pointer;
+  .caret { font-size: 9px; color: #888; }
+}
+.legend-body {
+  display: flex; flex-direction: column; gap: 6px;
+  margin-top: 4px;
+}
+.legend-section {
+  display: flex; flex-direction: column; gap: 2px;
+  padding-top: 2px;
+  &:not(:first-child) { border-top: 1px dashed #e2ddd0; padding-top: 4px; }
+}
+.legend-row {
+  display: flex; align-items: center; gap: 6px;
+  line-height: 1.2;
+  svg { flex: 0 0 auto; }
+}
+.dot {
+  display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  flex: 0 0 auto;
+  &.small { width: 7px; height: 7px; }
+}
 </style>
