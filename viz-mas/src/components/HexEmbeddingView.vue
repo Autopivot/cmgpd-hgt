@@ -101,6 +101,10 @@ let selected = ref(null)
 const acceptedSet = ref(new Set())
 
 function resizeHandler() { draw() }
+function onPanelResized({ ids } = {}) {
+  if (Array.isArray(ids) && !ids.includes('v3')) return
+  draw()
+}
 
 async function load() {
   loading.value = true
@@ -518,6 +522,7 @@ function onExternalClear() {
 onMounted(() => {
   load()
   window.addEventListener('resize', resizeHandler)
+  bus.on('panel-resized', onPanelResized)
   bus.on('match-accepted', onAccepted)
   bus.on('match-restored', onRestored)
   bus.on('hex-clear', onExternalClear)
@@ -528,6 +533,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   window.removeEventListener('resize', resizeHandler)
+  bus.off('panel-resized', onPanelResized)
   bus.off('match-accepted', onAccepted)
   bus.off('match-restored', onRestored)
   bus.off('hex-clear', onExternalClear)

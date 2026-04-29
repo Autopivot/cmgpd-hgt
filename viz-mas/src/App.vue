@@ -32,20 +32,25 @@
         <button class="btn" @click="resetSelection">Reset</button>
       </div>
     </div>
-    <div class="body">
-      <!-- Column 1 (3/12) -->
-      <div class="col col-left">
-        <div class="cell cell-upper" :class="{ fullscreen: state.fullscreen === 'v1' }"><OverviewView /></div>
+    <div class="body" ref="bodyRef">
+      <div class="col col-left" :style="{ flexBasis: colPct[0] + '%' }">
+        <div class="cell cell-upper" :class="{ fullscreen: state.fullscreen === 'v1' }"
+             :style="{ flexBasis: rowPct[0] + '%' }"><OverviewView /></div>
+        <div class="gutter-h" @mousedown="startDragRow(0, $event)" title="drag to resize"></div>
         <div class="cell cell-lower" :class="{ fullscreen: state.fullscreen === 'v2' }"><ProcessedRelationsTable /></div>
       </div>
-      <!-- Column 2 (5/12) -->
-      <div class="col col-mid">
-        <div class="cell cell-upper" :class="{ fullscreen: state.fullscreen === 'v3' }"><HexEmbeddingView /></div>
+      <div class="gutter" @mousedown="startDrag(0, $event)" title="drag to resize"></div>
+      <div class="col col-mid" :style="{ flexBasis: colPct[1] + '%' }">
+        <div class="cell cell-upper" :class="{ fullscreen: state.fullscreen === 'v3' }"
+             :style="{ flexBasis: rowPct[1] + '%' }"><HexEmbeddingView /></div>
+        <div class="gutter-h" @mousedown="startDragRow(1, $event)" title="drag to resize"></div>
         <div class="cell cell-lower" :class="{ fullscreen: state.fullscreen === 'v4' }"><BipartiteDetailView /></div>
       </div>
-      <!-- Column 3 (4/12) -->
-      <div class="col col-right">
-        <div class="cell cell-upper" :class="{ fullscreen: state.fullscreen === 'v5' }"><AgentBattleView /></div>
+      <div class="gutter" @mousedown="startDrag(1, $event)" title="drag to resize"></div>
+      <div class="col col-right" :style="{ flexBasis: colPct[2] + '%' }">
+        <div class="cell cell-upper" :class="{ fullscreen: state.fullscreen === 'v5' }"
+             :style="{ flexBasis: rowPct[2] + '%' }"><AgentBattleView /></div>
+        <div class="gutter-h" @mousedown="startDragRow(2, $event)" title="drag to resize"></div>
         <div class="cell cell-lower" :class="{ fullscreen: state.fullscreen === 'v6' }"><RulerInjectorView /></div>
       </div>
     </div>
@@ -71,6 +76,93 @@ const state = reactive({
   selectedPairIds: [],   // set by lasso/hex-select in V3, consumed by V4/V5
 })
 provide('appState', state)
+
+const COL_KEY = 'cmgpd-col-pct-v1'
+const ROW_KEY = 'cmgpd-row-pct-v1'
+const MIN_PCT = 8
+const MIN_ROW_PCT = 10
+const bodyRef = ref(null)
+
+function loadPct(key, defaults) {
+  try {
+    const s = JSON.parse(localStorage.getItem(key) || 'null')
+    if (Array.isArray(s) && s.length === defaults.length && s.every(n => typeof n === 'number')) return s
+  } catch {}
+  return [...defaults]
+}
+const colPct = ref(loadPct(COL_KEY, [20, 42, 38]))
+const rowPct = ref(loadPct(ROW_KEY, [40, 75, 62]))
+
+function makeDragger({ axis, pct, key, min, getRect, applyDelta, notifyCols }) {
+  let st = null
+  const cursor = axis === 'x' ? 'col-resize' : 'row-resize'
+  function onMove(e) {
+    if (!st) return
+    const delta = ((axis === 'x' ? e.clientX - st.start : e.clientY - st.start) / st.size) * 100
+    const next = applyDelta(st.base, delta, st.idx, min)
+    if (next) pct.value = next
+  }
+  function stop() {
+    if (!st) return
+    const before = st.snapshot
+    const movedIdx = st.idx
+    st = null
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', stop)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+    try { localStorage.setItem(key, JSON.stringify(pct.value)) } catch {}
+    const changed = pct.value.some((v, i) => v !== before[i])
+    if (changed) notifyResizeFor(...notifyCols(movedIdx))
+  }
+  function start(idx, e) {
+    e.preventDefault()
+    const rect = getRect(idx, e)
+    st = {
+      idx,
+      start: axis === 'x' ? e.clientX : e.clientY,
+      size: axis === 'x' ? rect.width : rect.height,
+      base: axis === 'x' ? [...pct.value] : pct.value[idx],
+      snapshot: [...pct.value],
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', stop)
+    document.body.style.cursor = cursor
+    document.body.style.userSelect = 'none'
+  }
+  return { start, stop, isActive: () => st != null }
+}
+
+const colDragger = makeDragger({
+  axis: 'x',
+  pct: colPct,
+  key: COL_KEY,
+  min: MIN_PCT,
+  getRect: () => bodyRef.value.getBoundingClientRect(),
+  applyDelta: (base, d, idx, min) => {
+    const a = base[idx] + d, b = base[idx + 1] - d
+    if (a < min || b < min) return null
+    const next = [...base]; next[idx] = a; next[idx + 1] = b
+    return next
+  },
+  notifyCols: (idx) => [idx, idx + 1],
+})
+const rowDragger = makeDragger({
+  axis: 'y',
+  pct: rowPct,
+  key: ROW_KEY,
+  min: MIN_ROW_PCT,
+  getRect: (_idx, e) => e.currentTarget.parentElement.getBoundingClientRect(),
+  applyDelta: (base, d, idx, min) => {
+    const v = base + d
+    if (v < min || v > 100 - min) return null
+    const next = [...rowPct.value]; next[idx] = v
+    return next
+  },
+  notifyCols: (idx) => [idx],
+})
+const startDrag = colDragger.start
+const startDragRow = rowDragger.start
 
 const healthy = ref(false)
 let tick = null
@@ -106,6 +198,17 @@ async function saveLLM() {
 
 function notifyResize() {
   nextTick(() => window.dispatchEvent(new Event('resize')))
+}
+
+const COL_VIEWS = [['v1', 'v2'], ['v3', 'v4'], ['v5', 'v6']]
+function notifyResizeFor(...colIdxs) {
+  nextTick(() => {
+    const ids = new Set()
+    for (const i of colIdxs) {
+      if (COL_VIEWS[i]) COL_VIEWS[i].forEach(v => ids.add(v))
+    }
+    bus.emit('panel-resized', { ids: Array.from(ids) })
+  })
 }
 
 function setYear(y) {
@@ -158,6 +261,8 @@ onUnmounted(() => {
   clearInterval(tick)
   bus.off('full-screen', handleFullScreen)
   window.removeEventListener('keydown', handleKeydown)
+  if (colDragger.isActive()) colDragger.stop()
+  if (rowDragger.isActive()) rowDragger.stop()
 })
 </script>
 
@@ -231,23 +336,62 @@ onUnmounted(() => {
 .body {
   flex: 1;
   min-height: 0;
-  display: grid;
-  grid-template-columns: 2.4fr 5fr 4.6fr;
-  gap: 8px;
+  display: flex;
+  flex-direction: row;
+  gap: 0;
   padding: 8px;
 }
 .col {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
   min-width: 0;
   min-height: 0;
+  flex: 0 0 auto;
 }
-.cell { min-height: 0; flex: 1; }
-.col-left .cell-upper { flex: 0 0 40%; }
-.col-left .cell-lower { flex: 1; }
-.col-mid .cell-upper { flex: 0 0 75%; }
-.col-mid .cell-lower { flex: 1; }
-.col-right .cell-upper { flex: 0 0 62%; }
-.col-right .cell-lower { flex: 1; }
+.gutter {
+  flex: 0 0 8px;
+  margin: 0 1px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  &:hover, &:active {
+    background: rgba(212, 168, 93, 0.35);
+  }
+  &::before {
+    content: '';
+    position: absolute;
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: 2px; height: 36px;
+    background: #6b6b6b;
+    border-radius: 1px;
+    opacity: 0.5;
+  }
+  &:hover::before { background: #d4a85d; opacity: 1; }
+}
+.cell { min-height: 0; min-width: 0; }
+.cell-upper { flex: 0 0 auto; }
+.cell-lower { flex: 1 1 auto; }
+.gutter-h {
+  flex: 0 0 8px;
+  margin: 1px 0;
+  cursor: row-resize;
+  background: transparent;
+  position: relative;
+  &:hover, &:active {
+    background: rgba(212, 168, 93, 0.35);
+  }
+  &::before {
+    content: '';
+    position: absolute;
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: 36px; height: 2px;
+    background: #6b6b6b;
+    border-radius: 1px;
+    opacity: 0.5;
+  }
+  &:hover::before { background: #d4a85d; opacity: 1; }
+}
 </style>
