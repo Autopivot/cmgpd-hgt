@@ -28,6 +28,14 @@ class MatchState:
         # husband_id → True while an orchestrator task is live. Lets /advance
         # respond 404 when the user hits it without a running session.
         self._active_sessions: dict[str, bool] = {}
+        # husband_id → {candidate_id → {field: new_value}} persona overrides.
+        # Set by the LLM hint router; consumed by the orchestrator on next round.
+        self._persona_overrides: dict[str, dict[str, dict]] = defaultdict(dict)
+        # husband_id → {candidate_id → {dimension: {"delta"|"absolute": float}}}
+        # score adjustments applied between rounds.
+        self._score_overrides: dict[str, dict[str, dict]] = defaultdict(dict)
+        # husband_id → set of candidate_ids the user has eliminated.
+        self._eliminated: dict[str, set[str]] = defaultdict(set)
 
     # ── Round-control plumbing (6-round orchestrator) ──────────────────
     def get_advance_event(self, husband_id: str) -> asyncio.Event:
@@ -66,6 +74,47 @@ class MatchState:
 
     def is_session_active(self, husband_id: str) -> bool:
         return bool(self._active_sessions.get(husband_id))
+
+    # ── LLM hint router overlays ──────────────────────────────────────
+    def set_persona_override(self, husband_id: str, candidate_id: str,
+                             field: str, value) -> None:
+        self._persona_overrides[husband_id].setdefault(candidate_id, {})[field] = value
+
+    def get_persona_overrides(self, husband_id: str, candidate_id: str) -> dict:
+        return dict(self._persona_overrides.get(husband_id, {}).get(candidate_id, {}))
+
+    def set_score_override(self, husband_id: str, candidate_id: str,
+                           dimension: str, *, delta: float | None = None,
+                           absolute: float | None = None) -> None:
+        d = self._score_overrides[husband_id].setdefault(candidate_id, {})
+        d[dimension] = {"delta": delta, "absolute": absolute}
+
+    def get_score_overrides(self, husband_id: str, candidate_id: str) -> dict:
+        return dict(self._score_overrides.get(husband_id, {}).get(candidate_id, {}))
+
+    def eliminate_candidate(self, husband_id: str, candidate_id: str) -> None:
+        self._eliminated[husband_id].add(candidate_id)
+
+    def is_eliminated(self, husband_id: str, candidate_id: str) -> bool:
+        return candidate_id in self._eliminated.get(husband_id, set())
+
+    def list_eliminated(self, husband_id: str) -> list[str]:
+        return sorted(self._eliminated.get(husband_id, set()))
+
+    def push_hint(self, husband_id: str, text: str, role: str = "all",
+                  round_n: int | None = None) -> None:
+        """Synchronously push a hint into the per-husband queue + log.
+
+        Used by the LLM hint router so directives produced from free-text
+        natural language are routed identically to formal `/hint` posts.
+        """
+        try:
+            self.get_hint_queue(husband_id).put_nowait(
+                {"text": text, "role": role, "round": round_n},
+            )
+        except asyncio.QueueFull:  # pragma: no cover - default queue is unbounded
+            pass
+        self.add_hint(husband_id, text, role)
 
     # ── Hints ──────────────────────────────────────────────────────────
     def add_hint(self, husband_id: str, text: str, role: str = "all") -> None:

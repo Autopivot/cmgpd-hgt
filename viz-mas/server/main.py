@@ -56,6 +56,7 @@ from .mas.profiles import get_profile as mas_get_profile
 # replacement; delete after unit 5 lands.
 # from .mas.negotiator import negotiate as mas_negotiate  # noqa: ERA001
 from .mas.negotiator_rounds import mas_negotiate_rounds
+from .mas.hint_router import parse_and_dispatch as mas_hint_parse_and_dispatch
 from .mas.state import state as mas_state
 from .mas.ws_broker import broker as mas_broker
 
@@ -478,6 +479,37 @@ async def api_negotiate_hint(husband_id: str, body: _HintBody):
     await mas_state.get_hint_queue(husband_id).put(payload)
     mas_state.add_hint(husband_id, body.text, body.role)
     return {"status": "ok"}
+
+
+class _HintParseBody(BaseModel):
+    session_id: str
+    free_text: str
+    context: dict | None = None
+
+
+@app.post("/api/hint/parse")
+async def api_hint_parse(body: _HintParseBody):
+    """Free-text NLP hint router.
+
+    Sends `free_text` to Qwen with a strict action-schema system prompt,
+    parses the response into structured actions (modify_persona_field,
+    modify_score, eliminate, inject_directive, noop_with_reason), and
+    dispatches each one against the in-memory MAS session for
+    `session_id` (a husband id). Falls back to a single inject_directive
+    on any LLM/parse failure so the user's guidance is never lost.
+    """
+    ctx = body.context or {}
+    log.info("hint_parse session=%s text=%r", body.session_id, body.free_text[:200])
+    result = await mas_hint_parse_and_dispatch(
+        session_id=body.session_id,
+        free_text=body.free_text,
+        context=ctx,
+    )
+    log.info(
+        "hint_parse dispatched %d action(s) for %s",
+        len(result.get("actions_applied", [])), body.session_id,
+    )
+    return result
 
 
 @app.get("/api/negotiate/{husband_id}/hints")
