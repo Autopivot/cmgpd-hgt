@@ -21,6 +21,28 @@
       <div v-if="!nodes.length" class="overlay muted tiny">
         load a husband in V5 (click in V3 / V4 / V2) to see his and the candidates' k=1 kinship neighbourhoods
       </div>
+
+      <!-- SEAL motif subwindow: opens on r_hw edge click -->
+      <div v-if="sealOpen" class="seal-popover" @click.self="sealOpen = false">
+        <div class="seal-card">
+          <div class="seal-head">
+            <span class="tiny muted">SEAL motif · {{ sealData?.husband_id }} ↔ {{ sealData?.wife_id }}</span>
+            <span v-if="sealData" class="motif-tag" :class="'motif-' + sealData.motif_id">
+              {{ sealData.motif_label || sealData.motif_id || '—' }}
+            </span>
+            <button class="popup-close" @click="sealOpen = false">×</button>
+          </div>
+          <div class="seal-body">
+            <svg v-if="sealData" ref="sealSvgRef" class="seal-canvas"></svg>
+            <div v-else class="muted tiny" style="padding:12px">loading…</div>
+            <div v-if="sealData" class="seal-meta tiny muted">
+              k = {{ sealData.drnl_radius }} · {{ sealData.nodes?.length || 0 }} nodes ·
+              {{ sealData.edges?.length || 0 }} edges ·
+              <span v-if="sealStub" style="color:#993c1d">(stub data — see seal_loader.py docstring for real-data contract)</span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -31,9 +53,9 @@ import axios from 'axios'
 import * as d3 from 'd3'
 import bus from '../utils/eventbus.js'
 
-// ── Inline kinship API client (Unit 2's getKinshipMulti will replace this
-// when PR #16 lands on the same base; until then this keeps the component
-// self-contained and reviewer-replayable). ───────────────────────────────
+// ── Inline API client (Unit 2's helpers will replace these when PR #16
+// lands on the same base; until then this keeps the component self-
+// contained and reviewer-replayable). ────────────────────────────────────
 const http = axios.create({ baseURL: '/api', timeout: 30000 })
 async function getKinshipMulti(person_ids, k = 1) {
   if (!person_ids?.length) return { nodes: [], edges: [] }
@@ -42,6 +64,15 @@ async function getKinshipMulti(person_ids, k = 1) {
     return r.data
   } catch {
     return { nodes: [], edges: [] }
+  }
+}
+async function getSealSubgraph(husband_id, wife_id) {
+  if (!husband_id || !wife_id) return null
+  try {
+    const r = await http.get(`/seal/${encodeURIComponent(husband_id)}/${encodeURIComponent(wife_id)}`)
+    return r.data
+  } catch {
+    return null
   }
 }
 
@@ -60,6 +91,13 @@ const zoomLayerRef = ref(null)
 const edgeLayerRef = ref(null)
 const nodeLayerRef = ref(null)
 
+// ── SEAL motif sub-window state ─────────────────────────────────────────
+const sealOpen = ref(false)
+const sealData = ref(null)        // schema v1 from /api/seal/{h}/{w}
+const sealStub = ref(true)        // toggled false once a non-stub backend ships
+const sealSvgRef = ref(null)
+let sealSimulation = null
+
 const headerChip = computed(() => {
   if (!husbandId.value) return 'idle'
   return `kinship · k=1 · husband + ${candidateIds.value.length} candidates · ${nodes.value.length} nodes / ${edges.value.length} edges`
@@ -73,12 +111,13 @@ const NODE_FILL = {
 }
 const NODE_RADIUS = { husband: 9, candidate: 8, kin: 5 }
 const EDGE_STYLE = {
-  r_fs: { dash: null,    color: '#666' },
-  r_fd: { dash: null,    color: '#666' },
-  r_ms: { dash: '3 2',   color: '#666' },
-  r_md: { dash: '3 2',   color: '#666' },
-  r_sib: { dash: '1 2',  color: '#888' },
+  r_fs: { dash: null,    color: '#666',    width: 1 },
+  r_fd: { dash: null,    color: '#666',    width: 1 },
+  r_ms: { dash: '3 2',   color: '#666',    width: 1 },
+  r_md: { dash: '3 2',   color: '#666',    width: 1 },
+  r_sib: { dash: '1 2',  color: '#888',    width: 1 },
   r_hw: { dash: null,    color: '#993c1d', width: 2 },
+  r_hw_potential: { dash: '5 4', color: '#c97a5a', width: 1.6 },
 }
 
 // ── Cohort-context listener: husband + top-K candidates ─────────────────
@@ -136,6 +175,18 @@ async function onCohortContext({ husband_id, candidate_ids } = {}) {
       out_edges.push({ source: e.source, target: e.target, type: e.type })
     }
   }
+  // Add a potential (dashed) r_hw edge from husband to each candidate.
+  // These materialise the moment V5 publishes its candidate set, so the
+  // user immediately sees "these are the proposals on the table". On
+  // accept, the matching potential edge is upgraded to a solid r_hw and
+  // the others are removed.
+  for (const cid of candidateIds.value) {
+    if (cid === husband_id) continue
+    if (out_nodes.some(n => n.id === cid) || out_nodes.some(n => n.id === husband_id)) {
+      out_edges.push({ source: husband_id, target: cid, type: 'r_hw_potential' })
+    }
+  }
+
   nodes.value = out_nodes
   edges.value = out_edges
   roleByNode.value = role
@@ -190,6 +241,14 @@ function renderGraph() {
     .attr('stroke-width', d => EDGE_STYLE[d.type]?.width || 1)
     .attr('stroke-dasharray', d => EDGE_STYLE[d.type]?.dash || null)
     .attr('opacity', 0.8)
+    .style('cursor', d => (d.type === 'r_hw' || d.type === 'r_hw_potential') ? 'pointer' : 'default')
+    .on('click', (ev, d) => {
+      if (d.type !== 'r_hw' && d.type !== 'r_hw_potential') return
+      ev.stopPropagation()
+      const sId = d.source.id || d.source
+      const tId = d.target.id || d.target
+      openSealSubgraph(sId, tId)
+    })
   const edgeMerged = edgeEnter.merge(edgeSel)
 
   // ── Nodes ──
@@ -235,12 +294,17 @@ function renderGraph() {
 // ── Unit 5 — accept cascade (preserved from earlier landing) ────────────
 function selectKinshipSvg() { return d3.select(svgRef.value) }
 
+// Fade level for non-winner egos on accept. 0.1 makes them "barely there"
+// per the spec's "turns unnoticed" — strong enough to disappear from the
+// reader's foreground while still hinting that more graph context exists.
+const FADE_OPACITY = 0.1
+
 function applyOpacityCascade(winnerWifeId) {
   const role = roleByNode.value
   function nodeOpacity(d) {
     const r = role.get(d.id)
     if (r === 'husband' || r === winnerWifeId || d.id === winnerWifeId) return 1.0
-    return 0.25
+    return FADE_OPACITY
   }
   function edgeOpacity(d) {
     const sId = typeof d.source === 'object' ? d.source.id : d.source
@@ -248,7 +312,7 @@ function applyOpacityCascade(winnerWifeId) {
     if (d.type === 'r_hw') return 1.0
     const sr = role.get(sId), tr = role.get(tId)
     const keep = (r) => r === 'husband' || r === winnerWifeId
-    return (keep(sr) || keep(tr)) ? 1.0 : 0.25
+    return (keep(sr) || keep(tr)) ? 1.0 : FADE_OPACITY
   }
   const svg = selectKinshipSvg()
   if (svg.empty()) return
@@ -281,12 +345,32 @@ function onMatchAccepted({ husband_id, wife_id } = {}) {
     resetOpacity()
   }
   ensureWifeNode(wife_id)
-  if (!edges.value.some(e =>
-    e.type === 'r_hw' &&
-    (e.source === husband_id || e.source?.id === husband_id) &&
-    (e.target === wife_id    || e.target?.id === wife_id))) {
-    edges.value.push({ source: husband_id, target: wife_id, type: 'r_hw' })
+
+  // Upgrade the winner's potential edge to a solid r_hw, and drop the
+  // other potential edges (those proposals are off the table).
+  const eqEnd = (e, h, w) => {
+    const sId = e.source?.id || e.source
+    const tId = e.target?.id || e.target
+    return sId === h && tId === w
   }
+  const upgraded = []
+  for (const e of edges.value) {
+    if (e.type === 'r_hw_potential') {
+      if (eqEnd(e, husband_id, wife_id)) {
+        upgraded.push({ source: husband_id, target: wife_id, type: 'r_hw' })
+      }
+      // non-winner potentials are silently dropped here.
+      continue
+    }
+    upgraded.push(e)
+  }
+  // If the winner's potential edge wasn't there (e.g. accept fired without
+  // a prior cohort-context publish), insert a solid r_hw directly.
+  if (!upgraded.some(e => e.type === 'r_hw' && eqEnd(e, husband_id, wife_id))) {
+    upgraded.push({ source: husband_id, target: wife_id, type: 'r_hw' })
+  }
+  edges.value = upgraded
+
   renderGraph()  // re-bind data so the new edge gets a DOM node
   if (simulation) {
     try { simulation.alpha(0.2).restart() } catch (_) { /* not ready */ }
@@ -296,6 +380,8 @@ function onMatchAccepted({ husband_id, wife_id } = {}) {
 }
 
 function onMatchRestored({ husband_id, wife_id } = {}) {
+  // Drop the solid r_hw for this pair; reinstate potentials for the full
+  // candidate set so the panel returns to its pre-accept state.
   edges.value = edges.value.filter(e => {
     if (e.type !== 'r_hw') return true
     if (husband_id && wife_id) {
@@ -305,12 +391,111 @@ function onMatchRestored({ husband_id, wife_id } = {}) {
     }
     return false
   })
+  if (husbandId.value && candidateIds.value.length) {
+    for (const cid of candidateIds.value) {
+      if (cid === husbandId.value) continue
+      const exists = edges.value.some(e => {
+        const sId = e.source?.id || e.source
+        const tId = e.target?.id || e.target
+        return e.type === 'r_hw_potential' && sId === husbandId.value && tId === cid
+      })
+      if (!exists) {
+        edges.value.push({ source: husbandId.value, target: cid, type: 'r_hw_potential' })
+      }
+    }
+  }
   renderGraph()
   resetOpacity()
   if (simulation) {
     try { simulation.alpha(0.1).restart() } catch (_) { /* ignore */ }
   }
   activeAccept = null
+}
+
+// ── SEAL motif sub-window ────────────────────────────────────────────────
+async function openSealSubgraph(husbandPid, wifePid) {
+  // Click can come from either direction; the SEAL endpoint expects
+  // (husband, wife). The husband-ego in our graph is the one whose role
+  // is 'husband'; the other endpoint is the wife.
+  let h = husbandPid, w = wifePid
+  if (roleByNode.value.get(wifePid) === 'husband') { h = wifePid; w = husbandPid }
+  sealOpen.value = true
+  sealData.value = null
+  const data = await getSealSubgraph(h, w)
+  sealData.value = data
+  sealStub.value = !!(data && data.version)   // STUB endpoint always sets version:'v1'
+  // Render after Vue mounts the SVG element.
+  setTimeout(() => renderSealSubgraph(), 50)
+}
+
+function renderSealSubgraph() {
+  if (!sealSvgRef.value || !sealData.value) return
+  const svg = d3.select(sealSvgRef.value)
+  svg.selectAll('*').remove()
+  const rect = sealSvgRef.value.getBoundingClientRect()
+  const W = rect.width || 360
+  const H = rect.height || 220
+  svg.attr('viewBox', `0 0 ${W} ${H}`)
+
+  const data = sealData.value
+  const dataNodes = (data.nodes || []).map(n => ({
+    ...n,
+    radius: n.is_focal ? 9 : (n.role === 'anchor' ? 4 : 6),
+  }))
+  const dataEdges = (data.edges || []).map(e => ({ ...e }))
+
+  if (sealSimulation) sealSimulation.stop()
+  sealSimulation = d3.forceSimulation(dataNodes)
+    .force('link', d3.forceLink(dataEdges).id(d => d.id).distance(45).strength(0.6))
+    .force('charge', d3.forceManyBody().strength(-120))
+    .force('center', d3.forceCenter(W / 2, H / 2))
+    .force('collide', d3.forceCollide().radius(d => d.radius + 4))
+    .alpha(0.7)
+
+  const edgeSel = svg.append('g').attr('class', 'seal-edges').selectAll('line')
+    .data(dataEdges).enter().append('line')
+    .attr('stroke', d => d.is_motif_edge ? '#993c1d' : '#999')
+    .attr('stroke-width', d => d.is_motif_edge ? 2 : 1)
+    .attr('stroke-dasharray', d => {
+      if (d.is_motif_edge) return null
+      if (d.type === 'r_ms' || d.type === 'r_md') return '3 2'
+      if (d.type === 'r_sib') return '1 2'
+      return null
+    })
+    .attr('opacity', 0.85)
+
+  const nodeSel = svg.append('g').attr('class', 'seal-nodes').selectAll('g')
+    .data(dataNodes).enter().append('g')
+  nodeSel.append('circle')
+    .attr('r', d => d.radius)
+    .attr('fill', d => {
+      if (d.role === 'husband') return '#0f6e56'
+      if (d.role === 'wife')    return '#d4a85d'
+      if (d.role === 'anchor')  return '#cfcfcf'
+      if (d.role === 'ancestor') return '#7a8b88'
+      return '#a8a8a8'
+    })
+    .attr('stroke', d => d.is_focal ? '#1a1a1a' : 'none')
+    .attr('stroke-width', d => d.is_focal ? 1.0 : 0)
+  nodeSel.append('text')
+    .attr('dy', d => d.radius + 11)
+    .attr('text-anchor', 'middle')
+    .style('font-size', '9px')
+    .style('font-family', 'Monaco, monospace')
+    .style('fill', '#444')
+    .text(d => {
+      if (d.id?.startsWith('anchor:')) return d.id.replace('anchor:', '')
+      return d.id
+    })
+  nodeSel.append('title').text(d =>
+    `${d.id} · role=${d.role} · drnl=${d.drnl_label} · sex=${d.sex || '?'}`)
+
+  sealSimulation.on('tick', () => {
+    edgeSel
+      .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x).attr('y2', d => d.target.y)
+    nodeSel.attr('transform', d => `translate(${d.x},${d.y})`)
+  })
 }
 
 let resizeRO = null
@@ -349,4 +534,36 @@ defineExpose({ nodes, edges, roleByNode })
   font-size: 11px; color: #888;
 }
 g.node { cursor: pointer; }
+
+.seal-popover {
+  position: absolute; inset: 0;
+  background: rgba(20, 18, 14, 0.32);
+  display: grid; place-items: center;
+  z-index: 20;
+}
+.seal-card {
+  width: min(440px, 92%); height: min(340px, 85%);
+  background: #fff;
+  border: 1px solid #888; border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  display: flex; flex-direction: column;
+}
+.seal-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; border-bottom: 1px solid #eee;
+}
+.seal-head .motif-tag {
+  font-size: 10px; padding: 1px 6px; border-radius: 3px;
+  background: #d4e8df; color: #0a4a3a;
+  font-family: Monaco, monospace;
+  &.motif-none { background: #f0efe9; color: #888; }
+}
+.popup-close {
+  margin-left: auto; background: transparent; border: none; cursor: pointer;
+  font-size: 18px; color: #666; padding: 0 4px;
+  &:hover { color: #1a1a1a; }
+}
+.seal-body { flex: 1 1 auto; display: flex; flex-direction: column; padding: 4px; min-height: 0; }
+.seal-canvas { flex: 1 1 auto; width: 100%; }
+.seal-meta { padding: 4px 6px; border-top: 1px solid #f0f0f0; }
 </style>
