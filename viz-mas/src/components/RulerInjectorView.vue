@@ -30,16 +30,22 @@
         </div>
         <div v-if="legendOpen" class="legend-body">
           <div class="legend-section">
+            <div class="legend-section-title tiny muted">nodes</div>
             <div class="legend-row"><span class="dot" style="background:#0f6e56"></span><span class="tiny">husband (focal)</span></div>
             <div class="legend-row"><span class="dot" style="background:#d4a85d;border:1px solid #1a1a1a"></span><span class="tiny">candidate wife</span></div>
             <div class="legend-row"><span class="dot small" style="background:#cfcfcf"></span><span class="tiny">kin (parent / child / sibling)</span></div>
           </div>
           <div class="legend-section">
-            <div class="legend-row"><svg width="28" height="6"><line x1="2" y1="3" x2="26" y2="3" stroke="#666" stroke-width="1"/></svg><span class="tiny">paternal (r_fs / r_fd)</span></div>
-            <div class="legend-row"><svg width="28" height="6"><line x1="2" y1="3" x2="26" y2="3" stroke="#666" stroke-width="1" stroke-dasharray="3 2"/></svg><span class="tiny">maternal (r_ms / r_md)</span></div>
-            <div class="legend-row"><svg width="28" height="6"><line x1="2" y1="3" x2="26" y2="3" stroke="#888" stroke-width="1" stroke-dasharray="1 2"/></svg><span class="tiny">sibling (r_sib)</span></div>
-            <div class="legend-row"><svg width="28" height="6"><line x1="2" y1="3" x2="26" y2="3" stroke="#c97a5a" stroke-width="1.6" stroke-dasharray="5 4"/></svg><span class="tiny">potential marriage</span></div>
-            <div class="legend-row"><svg width="28" height="6"><line x1="2" y1="3" x2="26" y2="3" stroke="#993c1d" stroke-width="2"/></svg><span class="tiny">accepted marriage (click for SEAL)</span></div>
+            <div class="legend-section-title tiny muted">relation (color)</div>
+            <div class="legend-row"><svg width="28" height="6"><line x1="2" y1="3" x2="26" y2="3" stroke="#1f6feb" stroke-width="1.6"/></svg><span class="tiny">paternal (r_fs / r_fd)</span></div>
+            <div class="legend-row"><svg width="28" height="6"><line x1="2" y1="3" x2="26" y2="3" stroke="#c0399b" stroke-width="1.6"/></svg><span class="tiny">maternal (r_ms / r_md)</span></div>
+            <div class="legend-row"><svg width="28" height="6"><line x1="2" y1="3" x2="26" y2="3" stroke="#5a8a3d" stroke-width="1.6"/></svg><span class="tiny">sibling (r_sib)</span></div>
+            <div class="legend-row"><svg width="28" height="6"><line x1="2" y1="3" x2="26" y2="3" stroke="#c2410c" stroke-width="1.8"/></svg><span class="tiny">marriage (r_hw)</span></div>
+          </div>
+          <div class="legend-section">
+            <div class="legend-section-title tiny muted">status (line)</div>
+            <div class="legend-row"><svg width="28" height="6"><line x1="2" y1="3" x2="26" y2="3" stroke="#444" stroke-width="1.6"/></svg><span class="tiny">observed (true)</span></div>
+            <div class="legend-row"><svg width="28" height="6"><line x1="2" y1="3" x2="26" y2="3" stroke="#444" stroke-width="1.6" stroke-dasharray="5 4"/></svg><span class="tiny">predicted</span></div>
           </div>
         </div>
       </div>
@@ -135,14 +141,24 @@ const NODE_FILL = {
   kin: '#cfcfcf',         // light grey
 }
 const NODE_RADIUS = { husband: 9, candidate: 8, kin: 5 }
+// Encoding:
+//   COLOR  → kinship relation (paternal / maternal / sibling / marriage)
+//   STROKE → observation status (solid = observed in data; dashed = predicted)
+// Currently only r_hw_potential is predicted; all kinship edges are observed.
+const EDGE_COLOR = {
+  paternal: '#1f6feb',  // blue
+  maternal: '#c0399b',  // magenta
+  sibling:  '#5a8a3d',  // olive green
+  marriage: '#c2410c',  // rust / red-orange
+}
 const EDGE_STYLE = {
-  r_fs: { dash: null,    color: '#666',    width: 1 },
-  r_fd: { dash: null,    color: '#666',    width: 1 },
-  r_ms: { dash: '3 2',   color: '#666',    width: 1 },
-  r_md: { dash: '3 2',   color: '#666',    width: 1 },
-  r_sib: { dash: '1 2',  color: '#888',    width: 1 },
-  r_hw: { dash: null,    color: '#993c1d', width: 2 },
-  r_hw_potential: { dash: '5 4', color: '#c97a5a', width: 1.6 },
+  r_fs:           { dash: null,  color: EDGE_COLOR.paternal, width: 1.2 },
+  r_fd:           { dash: null,  color: EDGE_COLOR.paternal, width: 1.2 },
+  r_ms:           { dash: null,  color: EDGE_COLOR.maternal, width: 1.2 },
+  r_md:           { dash: null,  color: EDGE_COLOR.maternal, width: 1.2 },
+  r_sib:          { dash: null,  color: EDGE_COLOR.sibling,  width: 1.2 },
+  r_hw:           { dash: null,  color: EDGE_COLOR.marriage, width: 2 },
+  r_hw_potential: { dash: '5 4', color: EDGE_COLOR.marriage, width: 1.6 },
 }
 
 // ── Cohort-context listener: husband + top-K candidates ─────────────────
@@ -621,6 +637,13 @@ g.node { cursor: pointer; }
   display: flex; flex-direction: column; gap: 2px;
   padding-top: 2px;
   &:not(:first-child) { border-top: 1px dashed #e2ddd0; padding-top: 4px; }
+}
+.legend-section-title {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #999;
+  margin-bottom: 2px;
 }
 .legend-row {
   display: flex; align-items: center; gap: 6px;
