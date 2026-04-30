@@ -21,7 +21,7 @@
     <div class="card-pre tiny muted">
       HGT {{ agent.pre_score?.toFixed?.(2) ?? '—' }}
       <template v-if="agent.score_gap != null"> · gap {{ agent.score_gap.toFixed(2) }}</template>
-      <template v-if="agent.hgt_label != null"> · {{ agent.hgt_label === 1 ? 'GT pair' : 'hard neg' }}</template>
+      <template v-if="revealGT && agent.hgt_label != null"> · {{ agent.hgt_label === 1 ? 'GT pair' : 'hard neg' }}</template>
     </div>
 
     <!-- Streaming feed / reasons -->
@@ -108,6 +108,7 @@ import { ref, computed, nextTick, watch } from 'vue'
 const props = defineProps({
   agent: { type: Object, required: true },
   isPicked: { type: Boolean, default: false },
+  revealGT: { type: Boolean, default: false },
 })
 
 defineEmits(['accept', 'eliminate', 'penalise', 'boost'])

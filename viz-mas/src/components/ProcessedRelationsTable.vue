@@ -3,6 +3,9 @@
     <div class="panel-head">
       <span>V2: Process View</span>
       <span class="tiny muted">{{ rows.length }} accepted</span>
+      <label class="tiny gt-toggle" title="Reveal whether the accepted edge is the true r_hw (GT)">
+        <input type="checkbox" v-model="showGT" /> show GT
+      </label>
       <button class="fs-btn" @click="bus.emit('full-screen', 'v2')" title="Full screen">⛶</button>
     </div>
     <div class="panel-body no-pad">
@@ -14,13 +17,14 @@
             <th class="num">score</th>
             <th class="num">gap</th>
             <th>H.</th>
+            <th v-if="showGT">GT</th>
             <th>source</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="!rows.length">
-            <td colspan="7" class="muted tiny" style="padding:6px 8px">
+            <td :colspan="showGT ? 8 : 7" class="muted tiny" style="padding:6px 8px">
               no accepted matches yet — accept from V4 batch or V5 arena to log here
             </td>
           </tr>
@@ -32,6 +36,11 @@
             <td class="num">{{ formatScore(row.score) }}</td>
             <td class="num">{{ formatScore(row.score_gap) }}</td>
             <td><span class="dot" :class="hClass(row.hungarian_correct)"></span></td>
+            <td v-if="showGT">
+              <span v-if="row.gt_label === 1" class="gt-chip gt-yes">GT</span>
+              <span v-else-if="row.gt_label === 0" class="gt-chip gt-no">neg</span>
+              <span v-else class="gt-chip gt-na">—</span>
+            </td>
             <td>
               <span v-for="lbl in row.source_labels" :key="lbl"
                     class="src-chip" :class="'src-' + lbl.toLowerCase()">{{ lbl }}</span>
@@ -60,6 +69,12 @@ const appState = inject('appState')
 const accepted = ref({})       // { husband_id → record }
 const cohort = ref(null)       // current cohort JSON for source-tag computation
 const restoring = ref(null)    // husband_id currently being restored
+
+// Reveal-GT toggle persists per browser. Off by default — historians who
+// want a blind triage shouldn't see the answer until they ask for it.
+const GT_KEY = 'cmgpd-v2-show-gt'
+const showGT = ref(localStorage.getItem(GT_KEY) === '1')
+watch(showGT, v => { try { localStorage.setItem(GT_KEY, v ? '1' : '0') } catch {} })
 
 const selectedSet = computed(() => new Set(appState.selectedPairIds || []))
 
@@ -107,6 +122,7 @@ const rows = computed(() => {
       ...rec,
       hungarian_correct: p?.hungarian_correct ?? null,
       score_gap: p?.score_gap ?? null,
+      gt_label: p?.label ?? null,
       source_labels: sourceLabelsFor(rec),
     })
   }
@@ -209,6 +225,24 @@ table.dense .num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .src-chip.src-hgt { background: #d4e8df; color: #0a4a3a; border: 1px solid #5fa68e; }
 .src-chip.src-mas { background: #f7e3b3; color: #5a3e0a; border: 1px solid #d4a85d; }
+
+.gt-toggle {
+  display: inline-flex; align-items: center; gap: 3px;
+  color: #555; cursor: pointer; user-select: none;
+  margin-left: 4px;
+  & > input { margin: 0; cursor: pointer; }
+}
+.gt-chip {
+  display: inline-block;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-weight: 700;
+  font-family: Monaco, monospace;
+}
+.gt-chip.gt-yes { background: #d4e8df; color: #0a4a3a; border: 1px solid #5fa68e; }
+.gt-chip.gt-no  { background: #f1d6cb; color: #5a1f10; border: 1px solid #b86048; }
+.gt-chip.gt-na  { background: #eee;    color: #777;   border: 1px solid #ccc; }
 
 .restore-btn {
   font-size: 10px;

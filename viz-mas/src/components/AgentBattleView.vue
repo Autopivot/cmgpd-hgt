@@ -14,6 +14,11 @@
           {{ advancing ? '…' : 'Approve & Advance →' }}
         </button>
         <span v-if="streamState" class="stream-state tiny" :class="streamState">{{ streamState }}</span>
+        <button class="btn ghost gt-reveal" :class="{ on: revealGT }"
+                @click="revealGT = !revealGT"
+                title="Reveal which candidate is the ground-truth wife">
+          {{ revealGT ? '👁 GT on' : '👁 GT off' }}
+        </button>
         <button class="btn ghost" :disabled="!husband || running" @click="startBattle">▶ arena</button>
         <button class="fs-btn" @click="bus.emit('full-screen', 'v5')" title="Full screen">⛶</button>
       </span>
@@ -147,6 +152,7 @@
             v-for="a in agents"
             :key="a.id"
             :agent="a"
+            :reveal-gt="revealGT"
             :is-picked="!!(accepted && accepted.id === a.id)"
             @accept="acceptOne($event)"
             @eliminate="eliminate($event)"
@@ -199,6 +205,13 @@ const MOTIF_LABELS = {
 }
 
 const appState = inject('appState')
+
+// Reveal-GT toggle in panel head. Off by default — historians evaluating the
+// arena shouldn't see which candidate is the GT until they explicitly opt in.
+const REVEAL_GT_KEY = 'cmgpd-v5-reveal-gt'
+const revealGT = ref(localStorage.getItem(REVEAL_GT_KEY) === '1')
+watch(revealGT, v => { try { localStorage.setItem(REVEAL_GT_KEY, v ? '1' : '0') } catch {} })
+
 const husband = ref(null)        // { id, ... }
 const husbandProfile = ref(null) // { sex, birth_year, banner_id, ... } from "stage:profile"
 const candidates = ref([])       // raw candidates from "stage:filter"
