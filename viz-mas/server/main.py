@@ -174,6 +174,11 @@ def _shap_components(pair: dict) -> list[dict[str, Any]]:
     return parts
 
 
+# --- v6 auxiliary routers ---
+from .api.macro_endpoint import router as macro_router
+app.include_router(macro_router)
+
+
 # ── HTTP endpoints ────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
