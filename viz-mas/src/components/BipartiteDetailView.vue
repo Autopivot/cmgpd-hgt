@@ -13,7 +13,7 @@
       <button class="fs-btn" @click="bus.emit('full-screen', 'v4')" title="Full screen">⛶</button>
     </div>
     <div class="panel-body no-pad" ref="wrapRef">
-      <svg ref="svgRef" class="bp-svg"></svg>
+      <svg ref="svgRef" class="bp-svg" @click="onSvgClick"></svg>
       <div v-if="!pairsToShow.length" class="overlay muted">no selection — click a hex (V3 honeycomb) or a dot (V3 scatter)</div>
       <div v-if="batchStatus" class="batch-status tiny">{{ batchStatus }}</div>
 
@@ -84,7 +84,29 @@ function onHexClear() {
   selectedPairs.value = []
   batchStatus.value = ''
   popup.value = null
+  clearSelection()
   draw()
+}
+
+// Drop the current husband selection and broadcast it so V5 + V6 follow.
+// V6 listens for husband-context with husband_id=null (resets husband + cands);
+// V5 listens for person-selected with id=null (close WS, blank target row);
+// V5 also clears via cohort-context for symmetry with its own clear paths.
+function clearSelection() {
+  if (!selectedHusbandId.value) return
+  selectedHusbandId.value = null
+  bus.emit('husband-context', { husband_id: null, candidates: [] })
+  bus.emit('person-selected', { id: null, role: 'husband' })
+  bus.emit('cohort-context', { husband_id: null, candidate_ids: [] })
+  draw()
+}
+
+// Click the empty SVG background → clear current husband selection.
+function onSvgClick(ev) {
+  if (ev.target === svgRef.value) {
+    popup.value = null
+    clearSelection()
+  }
 }
 function onAccepted(evt) {
   if (!evt || evt.husband_id == null || evt.wife_id == null) return

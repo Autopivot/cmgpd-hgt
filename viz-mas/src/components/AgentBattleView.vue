@@ -266,9 +266,27 @@ function onHexSelect(payload) {
 // when the user clicks a husband node. Route directly into loadHusband so V5
 // populates without requiring a V3 hex click first.
 function onPersonSelected(payload) {
-  if (payload?.role === 'husband' && payload?.id != null) {
-    loadHusband(payload.id)
+  if (payload?.role !== 'husband') return
+  if (payload?.id == null) {
+    // V4 cleared its husband — drop V5 state too so the panel doesn't sit
+    // on the previous person while V4 / V6 have already moved on.
+    closeWS()
+    husband.value = null
+    husbandProfile.value = null
+    candidates.value = []
+    agents.value = []
+    finalRanking.value = null
+    accepted.value = null
+    directives.value = []
+    streamState.value = 'idle'
+    currentRound.value = 0
+    currentRoundLabel.value = ''
+    isPaused.value = false
+    husbandNarrative.value = null
+    husbandPersona.value = null
+    return
   }
+  loadHusband(payload.id)
 }
 
 async function loadHusband(id) {
