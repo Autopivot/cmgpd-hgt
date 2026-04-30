@@ -3,11 +3,17 @@
     <div class="panel-head">
       <span>V3: Embedding View</span>
       <span class="legend-row">
-        <span class="score-legend tiny" title="ψ(m,w_true) − ψ(m,w_best_neg) for positives; ψ(m,w_neg) − ψ(m,w_true) for hard-negs. Anchors saturate at ±2 logits.">
+        <span v-if="colorMode === 'gap'" class="score-legend tiny" title="ψ(m,w_true) − ψ(m,w_best_neg) for positives; ψ(m,w_neg) − ψ(m,w_true) for hard-negs. Anchors saturate at ±2 logits.">
           <span class="lbl">score gap</span>
           <span class="tick">−2</span>
           <span class="ramp gap-ramp"></span>
           <span class="tick">+2</span>
+        </span>
+        <span v-else class="score-legend tiny" title="HGT raw logit, GT-free. Anchors at the cohort min/max — sequential ramp, NOT a correctness signal.">
+          <span class="lbl">HGT score</span>
+          <span class="tick">low</span>
+          <span class="ramp seq-ramp"></span>
+          <span class="tick">high</span>
         </span>
         <span class="score-legend tiny" title="Background heatmap = training-cohort density">
           <span class="lbl">train ref</span>
@@ -15,6 +21,12 @@
         </span>
       </span>
       <span class="tiny muted">{{ hint }}</span>
+      <button class="mode-btn color-mode-btn" @click="cycleColorMode"
+              :title="colorMode === 'gap'
+                ? 'eval mode (GT-aware): cell color = mean score_gap (red=wrong, green=right)'
+                : 'deploy mode (GT-free): cell color = mean HGT score (sequential, confidence only — NOT correctness)'">
+        {{ colorMode === 'gap' ? '⚖ eval' : '↪ deploy' }}
+      </button>
       <button class="mode-btn" @click="cycleMode" :title="`mode: ${mode}`">
         {{ modeLabel }}
       </button>
@@ -84,6 +96,16 @@ const hint = computed(() =>
 )
 function cycleMode() {
   mode.value = MODES[(MODES.indexOf(mode.value) + 1) % MODES.length]
+  draw()
+}
+
+// Color mode toggles between GT-dependent gap diverging palette ('gap', eval)
+// and GT-free score sequential palette ('score', deploy).
+const COLOR_MODE_KEY = 'cmgpd-v3-color-mode'
+const colorMode = ref(localStorage.getItem(COLOR_MODE_KEY) === 'score' ? 'score' : 'gap')
+function cycleColorMode() {
+  colorMode.value = colorMode.value === 'gap' ? 'score' : 'gap'
+  try { localStorage.setItem(COLOR_MODE_KEY, colorMode.value) } catch {}
   draw()
 }
 
@@ -290,7 +312,11 @@ function drawTrainRefHeatmap(svg, refNorm, W, H) {
 }
 
 function drawHoneycomb(svg, layout, W, H) {
-  const opts = { width: W, height: H, marginPx: MARGIN_PX }
+  const opts = {
+    width: W, height: H, marginPx: MARGIN_PX,
+    colorBy: colorMode.value,
+    showStripes: colorMode.value === 'gap',
+  }
   renderHoneycomb(svg, layout, opts)
 }
 
@@ -415,14 +441,32 @@ function gapColor(g) {
   if (v <= 0) return d3.interpolateRgb('#993c1d', '#f5f1e8')((v + 2) / 2)
   return d3.interpolateRgb('#f5f1e8', '#0f6e56')(v / 2)
 }
+// Sequential HGT-score palette (GT-free). Anchors at cohort min/max
+// computed once per draw and stashed on a closure-scoped object below.
+let _scoreScale = null
+function scoreColor(s) {
+  if (!_scoreScale) return '#cfcfcf'
+  const t = _scoreScale.range > 0 ? (s - _scoreScale.min) / _scoreScale.range : 0.5
+  return d3.interpolateRgb('#f1ecdf', '#3a6a8a')(Math.max(0, Math.min(1, t)))
+}
+function dotColor(p) {
+  return colorMode.value === 'score' ? scoreColor(p.raw_score) : gapColor(p.score_gap)
+}
 
 function _renderDots(svg, points, W, H) {
   const t = pxTransform(W, H)
+  if (colorMode.value === 'score' && points.length) {
+    let mn = Infinity, mx = -Infinity
+    for (const p of points) { if (p.raw_score < mn) mn = p.raw_score; if (p.raw_score > mx) mx = p.raw_score }
+    _scoreScale = { min: mn, max: mx, range: mx - mn }
+  } else {
+    _scoreScale = null
+  }
   const root = d3.select(svg).append('g').attr('class', 'scatter')
   root.selectAll('circle').data(points).enter().append('circle')
     .attr('cx', p => t.x(p.x)).attr('cy', p => t.y(p.y))
     .attr('r', p => p.pair_type === 'pred' ? 2.4 : 3.2)
-    .attr('fill', p => gapColor(p.score_gap))
+    .attr('fill', p => dotColor(p))
     .attr('stroke', '#6d6458')
     .attr('stroke-width', p => p.pair_type === 'pred' ? 0.3 : 0.5)
     .attr('stroke-dasharray', p => p.pair_type === 'pred' ? '1.5 1.5' : null)
@@ -553,6 +597,12 @@ onUnmounted(() => {
   &:hover { background: #ffe082; border-color: #d4a85d; }
   &.on { background: #ffe082; border-color: #d4a85d; font-weight: 700; }
 }
+.color-mode-btn {
+  font-weight: 600;
+  background: #eef3f7;
+  border-color: #5a7a90;
+  color: #1a1a1a;
+}
 .topk-ctl {
   display: inline-flex; align-items: center; gap: 2px;
   margin-left: 4px; color: #555;
@@ -573,6 +623,9 @@ onUnmounted(() => {
     }
     .ramp.gap-ramp {
       background: linear-gradient(to right, #993c1d 0%, #f5f1e8 50%, #0f6e56 100%);
+    }
+    .ramp.seq-ramp {
+      background: linear-gradient(to right, #f1ecdf 0%, #3a6a8a 100%);
     }
     .ramp.ref-ramp {
       width: 36px;

@@ -210,6 +210,8 @@ export function buildHoneycomb(cohort, opts = {}) {
                 cluster: null,
                 pairIds: [],
                 meanScoreGap: 0,
+                meanScore: 0,
+                scoreStd: 0,
                 posRatio: 0,
                 patriPathMean: 0,
                 sameLinFrac: 0,
@@ -218,15 +220,22 @@ export function buildHoneycomb(cohort, opts = {}) {
             });
             continue;
         }
-        let sumGap = 0, sumPos = 0, sumPatri = 0, sumSame = 0;
+        let sumGap = 0, sumPos = 0, sumPatri = 0, sumSame = 0, sumScore = 0;
+        const scoreList = [];
         for (const pi of c.occupants) {
             const p = pairs[pi] || {};
             sumGap += p.score_gap ?? 0;
             sumPos += (p.label === 1) ? 1 : 0;
             sumPatri += p.patri_path_count ?? 0;
             sumSame += p.same_lineage ? 1 : 0;
+            const sc = p.score ?? 0;
+            sumScore += sc;
+            scoreList.push(sc);
         }
         const nOcc = c.occupants.length;
+        const meanScore = sumScore / nOcc;
+        let varSum = 0;
+        for (const s of scoreList) { const d = s - meanScore; varSum += d * d; }
         outCells.push({
             id: c.id,
             cx: c.cx, cy: c.cy,
@@ -234,6 +243,8 @@ export function buildHoneycomb(cohort, opts = {}) {
             cluster: c.cluster,
             pairIds: c.occupants.slice(),
             meanScoreGap: sumGap / nOcc,
+            meanScore,
+            scoreStd: Math.sqrt(varSum / nOcc),
             posRatio: sumPos / nOcc,
             patriPathMean: sumPatri / nOcc,
             sameLinFrac: sumSame / nOcc,
