@@ -309,7 +309,7 @@ export async function resetEvalLog() {
 
 export async function getLLMConfig() {
   try { const r = await http.get('/llm_config'); return r.data }
-  catch { return { use_llm: false, model: 'qwen-plus-2025-04-28', api_key_set: false } }
+  catch { return { use_llm: false, model: 'qwen3.6-plus', api_key_set: false } }
 }
 
 export async function setLLMConfig({ api_key = null, model = null } = {}) {

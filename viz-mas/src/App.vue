@@ -1,31 +1,13 @@
 <template>
   <div class="container">
     <div class="title-bar">
-      <div class="title">CMGPD MAS · Hex Analytics</div>
+      <div class="title">GeneaLink</div>
       <div class="cohort-config">
         <span class="lbl">YEAR</span>
         <div class="seg">
           <button v-for="y in ALL_YEARS" :key="y" :class="{ active: state.year === y }"
                   @click="setYear(y)">{{ y }}</button>
         </div>
-        <span class="lbl">COND</span>
-        <div class="seg">
-          <button :class="{ active: state.ablation === 'ablated' }"
-                  @click="setAblation('ablated')">ablated</button>
-          <button :class="{ active: state.ablation === 'unablated' }"
-                  @click="setAblation('unablated')">unablated</button>
-        </div>
-        <span class="lbl">LLM</span>
-        <input class="mini-input model" v-model="llmModel"
-               placeholder="qwen-plus-2025-04-28" @change="saveLLM" />
-        <input class="mini-input key" :type="showKey ? 'text' : 'password'"
-               v-model="llmKey" placeholder="DashScope API key" @change="saveLLM" />
-        <button class="eye" @click="showKey = !showKey" :title="showKey ? 'hide' : 'show'">
-          {{ showKey ? '●' : '○' }}
-        </button>
-        <span class="llm-status" :class="{ on: llmUseLLM }">
-          {{ llmUseLLM ? 'llm' : 'stub' }}
-        </span>
       </div>
       <div class="actions">
         <span class="status" :class="{ ok: healthy }">{{ healthy ? 'backend ok' : 'static data' }}</span>
@@ -168,7 +150,7 @@ const healthy = ref(false)
 let tick = null
 
 // LLM config (per-person Qwen agent in V5)
-const llmModel = ref('qwen-plus-2025-04-28')
+const llmModel = ref('qwen3.6-plus')
 const llmKey = ref('')
 const llmUseLLM = ref(false)
 const showKey = ref(false)
@@ -176,7 +158,7 @@ const showKey = ref(false)
 async function loadLLM() {
   try {
     const c = await getLLMConfig()
-    llmModel.value = c.model || 'qwen-plus-2025-04-28'
+    llmModel.value = c.model || 'qwen3.6-plus'
     llmUseLLM.value = !!c.use_llm
   } catch {}
   // Restore key from localStorage if present (server only keeps in-memory).
