@@ -155,6 +155,21 @@ async function refreshCellRules() {
 //     in some sheets don't penalise others).
 //   • OR-reduce motif booleans — if any husband in the cell flagged a
 //     motif as enabled, the cell-level profile keeps it enabled.
+// Defaults applied when a husband in the cell has no localStorage sheet —
+// the user opened the cell + visited the husband but never moved a slider.
+// Treat that as implicit endorsement of the defaults so the cell can still
+// bind. Husbands who DID adjust still drive the mean.
+const DEFAULT_WEIGHTS = {
+  paternal_lineage_proximity: 1.0, shared_siblings: 1.0,
+  same_household_history: 1.0, same_banner: 1.0,
+}
+const DEFAULT_MOTIF_IDS = [
+  'M01_direct_sibling', 'M02_shared_father_via_fs_fd',
+  'M03_two_degree_sibling_chain', 'M10_household_mediated_daughter',
+  'CTX_same_banner', 'CTX_same_community',
+  'CTX_co_resident', 'CTX_same_region',
+]
+
 function _aggregateHusbandRules(husbandIds) {
   const weightSums = {}
   const weightCounts = {}
@@ -164,25 +179,24 @@ function _aggregateHusbandRules(husbandIds) {
   for (const hid of husbandIds) {
     if (hid == null || seen.has(hid)) continue
     seen.add(hid)
-    let raw
+    let parsed = null
     try {
-      raw = localStorage.getItem(`${HUSBAND_RULES_PREFIX}${hid}`)
-    } catch { raw = null }
-    if (!raw) continue
-    let parsed
-    try { parsed = JSON.parse(raw) } catch { continue }
-    if (!parsed || typeof parsed !== 'object') continue
+      const raw = localStorage.getItem(`${HUSBAND_RULES_PREFIX}${hid}`)
+      if (raw) parsed = JSON.parse(raw)
+    } catch {}
     n += 1
-    const w = parsed.weights || {}
-    for (const k of Object.keys(w)) {
-      const v = Number(w[k])
+    const w = (parsed && parsed.weights) || DEFAULT_WEIGHTS
+    for (const k of Object.keys(DEFAULT_WEIGHTS)) {
+      const v = Number(w[k] ?? DEFAULT_WEIGHTS[k])
       if (!Number.isFinite(v)) continue
       weightSums[k] = (weightSums[k] || 0) + v
       weightCounts[k] = (weightCounts[k] || 0) + 1
     }
-    const m = parsed.motifs_enabled || {}
-    for (const k of Object.keys(m)) {
-      motifsAny[k] = !!motifsAny[k] || !!m[k]
+    const m = (parsed && parsed.motifs_enabled) || null
+    if (m && Object.keys(m).length) {
+      for (const k of Object.keys(m)) motifsAny[k] = motifsAny[k] || !!m[k]
+    } else {
+      for (const k of DEFAULT_MOTIF_IDS) motifsAny[k] = motifsAny[k] || true
     }
   }
   const weights = {}
