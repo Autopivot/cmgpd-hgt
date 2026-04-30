@@ -1,0 +1,44 @@
+<!doctype html>
+<!--
+  Standalone visual review for MacroGrainChart.vue.
+  Vite dev server: http://localhost:5173/src/components/v6/MacroGrainChart.test.html
+  When the backend /api/macro/{year}?window=10 endpoint isn't up, the
+  component renders the "macro service unavailable" empty-state.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>MacroGrainChart · standalone</title>
+    <style>
+      body { font: 13px system-ui, sans-serif; background: #f7f3ea; color: #2a2118; padding: 24px; }
+      .frame { width: 320px; height: 180px; border: 1px solid #d8c8a4; background: #fff; padding: 8px; border-radius: 4px; }
+      label { display: block; margin-bottom: 8px; }
+    </style>
+  </head>
+  <body>
+    <h3>MacroGrainChart standalone</h3>
+    <label>year:
+      <select id="yr">
+        <option>1882</option><option>1885</option><option>1888</option>
+        <option>1903</option><option>1906</option><option>1909</option>
+      </select>
+    </label>
+    <div id="app"><div class="frame"><macro-grain-chart :year="year" /></div></div>
+    <script type="module">
+      import { createApp, ref } from 'vue'
+      import MacroGrainChart from './MacroGrainChart.vue'
+      const App = {
+        components: { MacroGrainChart },
+        setup() {
+          const year = ref(1882)
+          const sel = document.getElementById('yr')
+          sel.addEventListener('change', () => { year.value = +sel.value })
+          return { year }
+        },
+        template: `<div class="frame"><macro-grain-chart :year="year" /></div>`,
+      }
+      createApp(App).mount('#app')
+    </script>
+  </body>
+</html>
