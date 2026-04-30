@@ -50,19 +50,22 @@ function draw() {
     .attr('width', W).attr('height', H).attr('viewBox', `0 0 ${W} ${H}`)
   svg.selectAll('*').remove()
 
-  const pad = { l: 36, r: 32, t: 18, b: 22 }
+  const pad = { l: 50, r: 46, t: 8, b: 22 }
   const innerW = W - pad.l - pad.r
   const innerH = H - pad.t - pad.b
   const root = svg.append('g').attr('transform', `translate(${pad.l},${pad.t})`)
 
-  svg.append('text').attr('x', 6).attr('y', 12)
-    .style('font-size', '10px').style('font-weight', 600)
-    .style('fill', '#6b5736')
-    .text('Grain price + Disasters (10y)')
-  svg.append('text').attr('x', W - 6).attr('y', 12)
-    .style('font-size', '9px').attr('text-anchor', 'end')
-    .style('fill', '#993c1d')
-    .text('disasters →')
+  // Y-axis titles — rotated, sitting outside the plot area.
+  svg.append('text')
+    .attr('transform', `rotate(-90) translate(${-(pad.t + innerH / 2)}, 12)`)
+    .attr('text-anchor', 'middle')
+    .style('font-size', '10px').style('font-weight', 600).style('fill', '#6b5736')
+    .text('grain price')
+  svg.append('text')
+    .attr('transform', `rotate(-90) translate(${-(pad.t + innerH / 2)}, ${W - 6})`)
+    .attr('text-anchor', 'middle')
+    .style('font-size', '10px').style('font-weight', 600).style('fill', '#993c1d')
+    .text('Disasters')
 
   const data = series.value
   if (!data.length) {

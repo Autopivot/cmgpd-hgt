@@ -4,20 +4,23 @@
       select a husband in V4 to see candidate similarity
     </div>
     <template v-else>
-      <div class="tabs">
-        <button
-          v-for="m in METRICS"
-          :key="m.key"
-          class="tab-btn"
-          :class="{ on: metric === m.key }"
-          @click="metric = m.key"
-        >{{ m.label }}</button>
-      </div>
-      <div class="chart-host" ref="hostRef">
-        <svg ref="svgRef" class="bar-svg"></svg>
-        <div v-if="loading" class="hint">loading…</div>
-        <div v-else-if="!candidates || candidates.length === 0" class="hint">
-          no candidates
+      <div class="chart-row">
+        <div class="chart-host" ref="hostRef">
+          <svg ref="svgRef" class="bar-svg"></svg>
+          <div v-if="loading" class="hint">loading…</div>
+          <div v-else-if="!candidates || candidates.length === 0" class="hint">
+            no candidates
+          </div>
+        </div>
+        <div class="metric-picker">
+          <button
+            v-for="m in METRICS"
+            :key="m.key"
+            class="metric-btn"
+            :class="{ on: metric === m.key }"
+            @click="metric = m.key"
+            :title="m.label"
+          >{{ m.short }}</button>
         </div>
       </div>
     </template>
@@ -36,10 +39,10 @@ const props = defineProps({
 })
 
 const METRICS = [
-  { key: 'paternal_lineage_proximity', label: 'paternal lineage proximity' },
-  { key: 'shared_siblings',            label: 'shared siblings' },
-  { key: 'same_household_history',     label: 'same household history' },
-  { key: 'same_banner',                label: 'same banner' },
+  { key: 'paternal_lineage_proximity', label: 'paternal lineage proximity', short: 'paternal' },
+  { key: 'shared_siblings',            label: 'shared siblings',             short: 'siblings' },
+  { key: 'same_household_history',     label: 'same household history',      short: 'household' },
+  { key: 'same_banner',                label: 'same banner',                  short: 'banner' },
 ]
 
 const metric = ref('paternal_lineage_proximity')
@@ -131,31 +134,36 @@ function draw() {
   })
   rows.sort((a, b) => d3.descending(a.value, b.value))
 
-  const margin = { top: 6, right: 28, bottom: 18, left: 78 }
+  const margin = { top: 8, right: 8, bottom: 36, left: 36 }
   const innerW = Math.max(20, w - margin.left - margin.right)
   const innerH = Math.max(20, h - margin.top - margin.bottom)
   const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`)
 
   const binary = isBinaryMetric()
   const maxV = binary ? 1 : (d3.max(rows, d => d.value) || 1)
-  const x = d3.scaleLinear().domain([0, Math.max(1e-9, maxV)]).range([0, innerW])
-  const y = d3.scaleBand()
+  const x = d3.scaleBand()
     .domain(rows.map(r => String(r.wife_id)))
-    .range([0, innerH])
-    .padding(0.18)
+    .range([0, innerW])
+    .padding(0.2)
+  const y = d3.scaleLinear().domain([0, Math.max(1e-9, maxV)]).range([innerH, 0])
 
-  // Axes
-  const xAxis = binary
-    ? d3.axisBottom(x).tickValues([0, 1]).tickFormat(d => d === 1 ? 'yes' : 'no')
-    : d3.axisBottom(x).ticks(4).tickFormat(d3.format('.2~f'))
-  g.append('g')
+  // X axis (candidate IDs along the bottom, rotated for legibility).
+  const xAxisG = g.append('g')
     .attr('transform', `translate(0,${innerH})`)
-    .call(xAxis)
-    .call(s => s.selectAll('text').attr('font-size', 9).attr('fill', '#444'))
-    .call(s => s.selectAll('path,line').attr('stroke', '#bbb'))
+    .call(d3.axisBottom(x))
+  xAxisG.selectAll('text')
+    .attr('font-size', 9).attr('fill', '#222')
+    .attr('transform', 'rotate(-32) translate(-6,0)')
+    .style('text-anchor', 'end')
+  xAxisG.selectAll('path,line').attr('stroke', '#bbb')
+
+  // Y axis (metric value).
+  const yAxis = binary
+    ? d3.axisLeft(y).tickValues([0, 1]).tickFormat(d => d === 1 ? 'yes' : 'no')
+    : d3.axisLeft(y).ticks(4).tickFormat(d3.format('.2~f'))
   g.append('g')
-    .call(d3.axisLeft(y))
-    .call(s => s.selectAll('text').attr('font-size', 10).attr('fill', '#222'))
+    .call(yAxis)
+    .call(s => s.selectAll('text').attr('font-size', 9).attr('fill', '#444'))
     .call(s => s.selectAll('path,line').attr('stroke', '#bbb'))
 
   // Tooltip
@@ -170,10 +178,10 @@ function draw() {
     .enter()
     .append('rect')
     .attr('class', 'candidate-bar')
-    .attr('x', 0)
-    .attr('y', d => y(String(d.wife_id)))
-    .attr('height', y.bandwidth())
-    .attr('width', d => Math.max(0.5, x(d.value)))
+    .attr('x', d => x(String(d.wife_id)))
+    .attr('y', d => y(d.value))
+    .attr('width', x.bandwidth())
+    .attr('height', d => Math.max(0.5, innerH - y(d.value)))
     .attr('fill', '#0f6e56')
     .attr('opacity', d => d.missing ? 0.35 : 1)
     .on('mousemove', (event, d) => {
@@ -187,28 +195,28 @@ function draw() {
     })
     .on('mouseleave', () => { tip.style('opacity', 0) })
 
-  // Missing-value "?" labels
+  // Missing-value "?" labels (centered above x-axis tick)
   g.selectAll('text.miss-label')
     .data(rows.filter(r => r.missing))
     .enter()
     .append('text')
     .attr('class', 'miss-label')
-    .attr('x', 4)
-    .attr('y', d => y(String(d.wife_id)) + y.bandwidth() / 2)
-    .attr('dy', '0.35em')
+    .attr('x', d => x(String(d.wife_id)) + x.bandwidth() / 2)
+    .attr('y', innerH - 4)
+    .attr('text-anchor', 'middle')
     .attr('font-size', 10)
     .attr('fill', '#a33')
     .text('?')
 
-  // Value labels at bar end
+  // Value labels above bar
   g.selectAll('text.val-label')
     .data(rows.filter(r => !r.missing))
     .enter()
     .append('text')
     .attr('class', 'val-label')
-    .attr('x', d => x(d.value) + 3)
-    .attr('y', d => y(String(d.wife_id)) + y.bandwidth() / 2)
-    .attr('dy', '0.35em')
+    .attr('x', d => x(String(d.wife_id)) + x.bandwidth() / 2)
+    .attr('y', d => y(d.value) - 3)
+    .attr('text-anchor', 'middle')
     .attr('font-size', 9)
     .attr('fill', '#333')
     .text(d => binary ? (d.value === 1 ? 'yes' : 'no') : d3.format('.2~f')(d.value))
@@ -261,13 +269,21 @@ onUnmounted(() => {
   font-size: 11px;
   font-style: italic;
 }
-.tabs {
+.chart-row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 2px;
-  padding: 2px 0 4px 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 6px;
 }
-.tab-btn {
+.metric-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 0 0 auto;
+  padding: 2px 0;
+  align-self: flex-start;
+}
+.metric-btn {
   font-size: 10px;
   padding: 2px 6px;
   border: 1px solid #888;
@@ -275,6 +291,8 @@ onUnmounted(() => {
   background: #f5f5f5;
   color: #1a1a1a;
   cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
   &:hover { background: #fff3c4; border-color: #d4a85d; }
   &.on {
     background: #ffe082;
@@ -285,8 +303,8 @@ onUnmounted(() => {
 .chart-host {
   position: relative;
   flex: 1 1 auto;
-  width: 100%;
-  min-height: 180px;
+  min-width: 0;
+  min-height: 0;
 }
 .bar-svg {
   width: 100%;
