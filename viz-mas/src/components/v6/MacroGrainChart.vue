@@ -18,7 +18,7 @@ const props = defineProps({ year: { type: Number, default: null } })
 
 const wrapRef = ref(null)
 const svgRef = ref(null)
-const series = ref([])   // [{year, price}]
+const series = ref([])   // [{year, price, low, high}]
 const errored = ref(false)
 
 async function load() {
@@ -28,12 +28,13 @@ async function load() {
     const r = await http.get(`/macro/${encodeURIComponent(props.year)}`, {
       params: { window: 10 },
     })
-    // Tolerate a few server shapes:
-    //   {series:[{year,price}, ...]}  | {prices:[...]}  | [{year,price}, ...]
-    const raw = r.data?.series || r.data?.prices || r.data
-    const arr = Array.isArray(raw) ? raw : []
-    series.value = arr
-      .map(d => ({ year: +d.year, price: +(d.price ?? d.value ?? d.grain_price) }))
+    const d = r.data || {}
+    const ys = Array.isArray(d.years) ? d.years : []
+    const px = Array.isArray(d.grain_price) ? d.grain_price : []
+    const lo = Array.isArray(d.grain_low) ? d.grain_low : px
+    const hi = Array.isArray(d.grain_high) ? d.grain_high : px
+    series.value = ys
+      .map((y, i) => ({ year: +y, price: +px[i], low: +lo[i], high: +hi[i] }))
       .filter(d => Number.isFinite(d.year) && Number.isFinite(d.price))
   } catch {
     errored.value = true
@@ -74,13 +75,26 @@ function draw() {
   }
 
   const xExtent = d3.extent(data, d => d.year)
-  const yExtent = d3.extent(data, d => d.price)
-  const yPad = (yExtent[1] - yExtent[0]) * 0.1 || 1
+  const yMin = d3.min(data, d => d.low ?? d.price)
+  const yMax = d3.max(data, d => d.high ?? d.price)
+  const yPad = (yMax - yMin) * 0.1 || 1
 
   const x = d3.scaleLinear().domain(xExtent).range([0, innerW])
   const y = d3.scaleLinear()
-    .domain([yExtent[0] - yPad, yExtent[1] + yPad])
+    .domain([yMin - yPad, yMax + yPad])
     .range([innerH, 0])
+
+  // LOW–HIGH band — faint gold area showing the spread across grain types.
+  const band = d3.area()
+    .x(d => x(d.year))
+    .y0(d => y(d.low ?? d.price))
+    .y1(d => y(d.high ?? d.price))
+    .curve(d3.curveMonotoneX)
+  root.append('path').datum(data)
+    .attr('d', band)
+    .attr('fill', '#d4a85d')
+    .attr('fill-opacity', 0.18)
+    .attr('stroke', 'none')
 
   // Axes — bottom + left.
   const compactYear = yr => `'${String(yr).slice(-2)}`

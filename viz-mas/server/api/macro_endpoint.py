@@ -1,8 +1,12 @@
 """GET /api/macro/{year} — grain-price + disaster-count macro context.
 
-Loaded once at import. Disasters.parquet is sparse (event-years only),
-so missing rows are zero-filled; grain prices are forward/back-filled.
-If parquets are missing the router still mounts and routes return 503.
+Reads raw DS0009 (.rda) directly so the frontend gets the full LOW/HIGH grain
+range — averaging all 12 columns (as the cached parquet did) flattened the
+signal. Disasters still use the parquet cache (event-counts only, no shape).
+
+Payload: {years, grain_price (mean of 12), grain_low (min of LOW_*), grain_high
+(max of HIGH_*), disaster_count}. If sources are missing the router still
+mounts and routes return 503.
 """
 from __future__ import annotations
 
@@ -10,6 +14,7 @@ import logging
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
@@ -23,34 +28,88 @@ logger = logging.getLogger(__name__)
 MIN_YEAR = 1749
 MAX_YEAR = 1909
 
+# Raw DS0009 location — primary source per user direction.
+RAW_DS0009 = Path("D:/projects/cmgpd-hgt/data/raw/DS0009/27063-0009-Data.rda")
+
+LOW_COLS = ["LOW_RICE", "LOW_HUSKED_MILLET", "LOW_UNHUSKED_MILLET",
+            "LOW_SORGHUM", "LOW_WHEAT", "LOW_SOY"]
+HIGH_COLS = ["HIGH_RICE", "HIGH_HUSKED_MILLET", "HIGH_UNHUSKED_MILLET",
+             "HIGH_SORGHUM", "HIGH_WHEAT", "HIGH_SOY"]
+
 router = APIRouter(prefix="/api")
 
 
-def _load_macro_table() -> pd.DataFrame | None:
+def _load_grain_from_rda() -> pd.DataFrame | None:
+    if not RAW_DS0009.exists():
+        logger.warning("macro_endpoint: raw DS0009 .rda not found at %s", RAW_DS0009)
+        return None
     try:
-        from src.config import DISASTER_PARQUET_PATH, GRAIN_PARQUET_PATH
-    except Exception as exc:  # pragma: no cover
+        import pyreadr
+    except ImportError:
+        logger.warning("macro_endpoint: pyreadr not installed; falling back to parquet")
+        return None
+    res = pyreadr.read_r(str(RAW_DS0009))
+    df = res[next(iter(res.keys()))].copy()
+    for c in LOW_COLS + HIGH_COLS:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+            df.loc[df[c] == -99.0, c] = np.nan
+    df["YEAR"] = pd.to_numeric(df["YEAR"], errors="coerce").astype("Int64")
+    df = df.dropna(subset=["YEAR"]).copy()
+    df["YEAR"] = df["YEAR"].astype(int)
+
+    df["grain_low"] = df[[c for c in LOW_COLS if c in df.columns]].min(axis=1, skipna=True)
+    df["grain_high"] = df[[c for c in HIGH_COLS if c in df.columns]].max(axis=1, skipna=True)
+    all_cols = [c for c in LOW_COLS + HIGH_COLS if c in df.columns]
+    df["grain_price"] = df[all_cols].mean(axis=1, skipna=True)
+    return df[["YEAR", "grain_price", "grain_low", "grain_high"]].sort_values("YEAR")
+
+
+def _load_grain_fallback_parquet() -> pd.DataFrame | None:
+    try:
+        from src.config import GRAIN_PARQUET_PATH
+    except Exception as exc:
         logger.warning("macro_endpoint: cannot import src.config (%s)", exc)
         return None
+    p = Path(GRAIN_PARQUET_PATH)
+    if not p.exists():
+        return None
+    df = pd.read_parquet(p)[["YEAR", "grain_price"]].copy()
+    df["grain_low"] = df["grain_price"]
+    df["grain_high"] = df["grain_price"]
+    return df
 
-    grain_path = Path(GRAIN_PARQUET_PATH)
-    disaster_path = Path(DISASTER_PARQUET_PATH)
-    if not grain_path.exists() or not disaster_path.exists():
+
+def _load_disasters() -> pd.DataFrame | None:
+    try:
+        from src.config import DISASTER_PARQUET_PATH
+    except Exception:
+        return None
+    p = Path(DISASTER_PARQUET_PATH)
+    if not p.exists():
+        return None
+    return pd.read_parquet(p)[["YEAR", "disaster_count"]]
+
+
+def _load_macro_table() -> pd.DataFrame | None:
+    grain = _load_grain_from_rda()
+    if grain is None:
+        grain = _load_grain_fallback_parquet()
+    disaster = _load_disasters()
+    if grain is None or disaster is None:
         logger.warning(
-            "macro_endpoint: parquet missing (grain=%s, disaster=%s) — /api/macro will 503",
-            grain_path.exists(), disaster_path.exists(),
+            "macro_endpoint: source missing (grain=%s, disaster=%s) — /api/macro will 503",
+            grain is not None, disaster is not None,
         )
         return None
-
-    grain = pd.read_parquet(grain_path)[["YEAR", "grain_price"]]
-    disaster = pd.read_parquet(disaster_path)[["YEAR", "disaster_count"]]
 
     years = pd.RangeIndex(MIN_YEAR, MAX_YEAR + 1, name="YEAR")
     df = pd.DataFrame(index=years)
     df = df.join(grain.set_index("YEAR"), how="left")
     df = df.join(disaster.set_index("YEAR"), how="left")
     df["disaster_count"] = df["disaster_count"].fillna(0).astype(int)
-    df["grain_price"] = df["grain_price"].ffill().bfill().astype(float)
+    for c in ("grain_price", "grain_low", "grain_high"):
+        df[c] = df[c].ffill().bfill().astype(float)
     return df.reset_index()
 
 
@@ -70,10 +129,13 @@ def get_macro(year: int, window: int = Query(10, ge=1, le=50)) -> dict:
     win_years = list(range(year - window + 1, year + 1))
     sub = _macro_df.set_index("YEAR").reindex(win_years)
     sub["disaster_count"] = sub["disaster_count"].fillna(0).astype(int)
-    sub["grain_price"] = sub["grain_price"].ffill().bfill().astype(float)
+    for c in ("grain_price", "grain_low", "grain_high"):
+        sub[c] = sub[c].ffill().bfill().astype(float)
 
     return {
         "years": win_years,
         "grain_price": [float(v) for v in sub["grain_price"].tolist()],
+        "grain_low": [float(v) for v in sub["grain_low"].tolist()],
+        "grain_high": [float(v) for v in sub["grain_high"].tolist()],
         "disaster_count": [int(v) for v in sub["disaster_count"].tolist()],
     }

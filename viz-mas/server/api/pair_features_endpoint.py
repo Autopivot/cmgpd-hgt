@@ -172,16 +172,22 @@ def _same_household_history(h_raw: str, w_raw: str) -> int:
     return overlap
 
 
-def _same_banner(h_raw: str, w_raw: str) -> bool:
+def _same_banner(h_raw: str, w_raw: str):
+    """Return True/False when both banners known, None when either is missing.
+
+    Distinguishing 'mismatched' from 'unknown' matters for the V6 bar chart;
+    silently coercing missing banners to False misled the historian into
+    thinking a pair was cross-banner when in fact one side wasn't recorded.
+    """
     _profiles._load()
     h = _profiles._cache.get(h_raw)
     w = _profiles._cache.get(w_raw)
     if not h or not w:
-        return False
+        return None
     bh = h.get("banner_id")
     bw = w.get("banner_id")
     if bh is None or bw is None:
-        return False
+        return None
     return bh == bw
 
 
