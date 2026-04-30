@@ -144,10 +144,12 @@ export function renderHoneycomb(svgEl, layout, opts = {}) {
 
         if (cell.empty) {
             poly.setAttribute('fill', EMPTY_FILL);
+            poly.setAttribute('fill-opacity', '0.35');
             poly.setAttribute('stroke', EMPTY_STROKE);
             poly.setAttribute('stroke-width', '0.5');
         } else {
             poly.setAttribute('fill', cellFill(cell));
+            poly.setAttribute('fill-opacity', '0.78');
             poly.setAttribute('stroke', 'none');
         }
 
