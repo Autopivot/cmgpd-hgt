@@ -81,6 +81,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- v6 auxiliary routers ---
+from .api.pair_features_endpoint import router as pair_features_router  # noqa: E402
+app.include_router(pair_features_router)
+
 # ── Cohort cache ──────────────────────────────────────────────────────
 _cohort_cache: dict[tuple[int, str], dict] = {}
 
