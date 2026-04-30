@@ -332,7 +332,15 @@ function onCanonicalCellClick(ev) {
     applyCellHighlight()
     return
   }
-  bus.emit('hex-select', { binKey: `cell:${cell.id}`, pairs })
+  // Surface cell_id explicitly so V6 (RulerInjectorView) can bind aggregated
+  // rule profiles to this hex cell. binKey already encodes the id but
+  // downstream consumers shouldn't have to parse a string.
+  bus.emit('hex-select', {
+    binKey: `cell:${cell.id}`,
+    cell_id: cell.id,
+    pairIds: pairIds.slice(),
+    pairs,
+  })
   selected.value = { kind: 'cell', id: cell.id }
   applyCellHighlight()
 }

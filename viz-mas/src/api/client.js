@@ -173,10 +173,12 @@ export async function getPair({ year, ablation = 'ablated', id } = {}) {
  *   { type: 'round_paused',     round: N, awaiting: 'user_advance' }
  *   { type: 'final_ranking',    ranking: [{ candidate_id, target_score, candidate_score, final_score, lambda }], chosen?: {...} }
  */
-export async function startNegotiation({ husband_id, year, ablation = 'ablated', auto_commit = false } = {}) {
-  const r = await http.post(`/negotiate/${encodeURIComponent(husband_id)}`, {
-    year, ablation, auto_commit,
-  })
+export async function startNegotiation({
+  husband_id, year, ablation = 'ablated', auto_commit = false, cell_rules = null,
+} = {}) {
+  const body = { year, ablation, auto_commit }
+  if (cell_rules) body.cell_rules = cell_rules
+  const r = await http.post(`/negotiate/${encodeURIComponent(husband_id)}`, body)
   return r.data
 }
 
@@ -435,6 +437,64 @@ export async function getRules() {
     _ruleCache = _normalize({ macro: {}, motifs: {} })
   }
   return _ruleCache
+}
+
+/**
+ * Per-hex-cell rule profile (V6 cell-binding, F2).
+ *
+ * Aggregated weights/motifs that the user saved against a particular hex
+ * cell at year=1882 (F1's per-husband sliders → averaged into the cell).
+ * In 1885+ years F1's sliders fall back to read-only and pre-fill from
+ * whatever we last persisted here, so reviewers see the exact rule profile
+ * the analyst committed at training time.
+ *
+ * Backend route: GET/POST /api/cell-rules/{cell_id}?year=1882. If the
+ * backend isn't online we fall back to a localStorage fixture so the F2
+ * UI stays usable in offline / static-only mode.
+ *   localStorage key: `cmgpd-cell-rules-fixture-{cell_id}-{year}`
+ *
+ * Payload shape (matches the backend contract in B2):
+ *   { cell_id, year, n_husbands, weights: { id: float },
+ *     motifs_enabled: { id: bool }, updated_at: ISO-8601 string }
+ */
+const CELL_RULES_FIXTURE_PREFIX = 'cmgpd-cell-rules-fixture'
+
+function _cellFixtureKey(cell_id, year) {
+  return `${CELL_RULES_FIXTURE_PREFIX}-${cell_id}-${year}`
+}
+
+export async function getCellRules({ cell_id, year = 1882 } = {}) {
+  if (cell_id == null) return null
+  try {
+    const r = await http.get(`/cell-rules/${encodeURIComponent(cell_id)}`, { params: { year } })
+    return r.data || null
+  } catch {
+    // Fall back to localStorage fixture so F2 can be exercised end-to-end
+    // without the B2 endpoint live.
+    try {
+      const raw = localStorage.getItem(_cellFixtureKey(cell_id, year))
+      return raw ? JSON.parse(raw) : null
+    } catch {
+      return null
+    }
+  }
+}
+
+export async function postCellRules({ cell_id, year = 1882, n_husbands, weights, motifs_enabled } = {}) {
+  if (cell_id == null) throw new Error('postCellRules: cell_id required')
+  const updated_at = new Date().toISOString()
+  const body = { cell_id, year, n_husbands, weights, motifs_enabled, updated_at }
+  try {
+    const r = await http.post(`/cell-rules/${encodeURIComponent(cell_id)}`, body)
+    return r.data || body
+  } catch {
+    // Local-only persistence (B2 stub). Mirrors what the server would store
+    // so getCellRules round-trips correctly.
+    try {
+      localStorage.setItem(_cellFixtureKey(cell_id, year), JSON.stringify(body))
+    } catch {}
+    return body
+  }
 }
 
 /** Push macro / motif updates. Accepts {macro: {id: weight}, motifs: {id: bool}}. */
