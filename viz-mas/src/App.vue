@@ -11,6 +11,32 @@
       </div>
       <div class="actions">
         <span class="status" :class="{ ok: healthy }">{{ healthy ? 'backend ok' : 'static data' }}</span>
+        <div class="key-popover">
+          <button class="btn key-btn" :class="{ ok: llmUseLLM, missing: !llmUseLLM }"
+                  :title="llmUseLLM ? 'DashScope API key set' : 'Set DashScope API key'"
+                  @click="keyOpen = !keyOpen">🔑</button>
+          <div v-if="keyOpen" class="key-card">
+            <div class="key-row">
+              <span class="tiny muted">model</span>
+              <code class="model-pin">qwen3.6-plus</code>
+            </div>
+            <div class="key-row">
+              <span class="tiny muted">DashScope key</span>
+              <input class="mini-input key" :type="showKey ? 'text' : 'password'"
+                     v-model="llmKey" placeholder="sk-…"
+                     @keydown.enter="commitKey" />
+              <button class="eye" @click="showKey = !showKey"
+                      :title="showKey ? 'hide' : 'show'">{{ showKey ? '●' : '○' }}</button>
+            </div>
+            <div class="key-row right">
+              <span class="llm-status tiny" :class="{ on: llmUseLLM }">
+                {{ llmUseLLM ? 'llm' : 'stub' }}
+              </span>
+              <button class="btn" @click="commitKey">Save</button>
+              <button class="btn ghost" @click="keyOpen = false">Close</button>
+            </div>
+          </div>
+        </div>
         <button class="btn" @click="resetSelection">Reset</button>
       </div>
     </div>
@@ -154,6 +180,12 @@ const llmModel = ref('qwen3.6-plus')
 const llmKey = ref('')
 const llmUseLLM = ref(false)
 const showKey = ref(false)
+const keyOpen = ref(false)
+
+async function commitKey() {
+  await saveLLM()
+  if (llmUseLLM.value) keyOpen.value = false
+}
 
 async function loadLLM() {
   try {
@@ -314,6 +346,43 @@ onUnmounted(() => {
     &.ok { color: #d4a85d; border-color: #d4a85d; }
   }
   .btn { font-size: 10px; padding: 3px 8px; }
+  .key-popover { position: relative; display: inline-block; }
+  .key-btn {
+    background: #2a2a2a; color: #eaeaea; border: 1px solid #555;
+    border-radius: 3px; padding: 2px 6px; cursor: pointer;
+    &.ok { border-color: #3a7a46; }
+    &.missing { border-color: #c97a4d; }
+  }
+  .key-card {
+    position: absolute; top: 28px; right: 0; z-index: 50;
+    background: #1f1f1f; color: #eaeaea;
+    border: 1px solid #d4a85d; border-radius: 4px;
+    padding: 8px 10px; min-width: 280px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.4);
+    display: flex; flex-direction: column; gap: 6px;
+    .key-row { display: flex; align-items: center; gap: 6px; }
+    .key-row.right { justify-content: flex-end; }
+    .model-pin {
+      background: #2a2a2a; color: #d4a85d;
+      padding: 1px 6px; border-radius: 2px; font-size: 10px;
+      font-family: Monaco, monospace;
+    }
+    .mini-input.key {
+      flex: 1 1 auto; height: 22px; background: #2a2a2a; color: #eaeaea;
+      border: 1px solid #555; border-radius: 3px; padding: 0 6px;
+      font-size: 10px; font-family: Monaco, monospace;
+      &:focus { border-color: #ffd166; outline: none; }
+    }
+    .eye {
+      width: 22px; height: 22px; border: 1px solid #555; background: #2a2a2a;
+      color: #eaeaea; border-radius: 3px; cursor: pointer; font-size: 12px; line-height: 1;
+    }
+    .llm-status {
+      font-size: 9px; padding: 2px 6px; border-radius: 2px;
+      color: #9b9b9b; border: 1px solid #555;
+      &.on { color: #1a1a1a; background: #8aff96; border-color: #3a7a46; }
+    }
+  }
 }
 .body {
   flex: 1;
