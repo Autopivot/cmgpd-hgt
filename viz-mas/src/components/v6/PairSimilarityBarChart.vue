@@ -83,6 +83,10 @@ async function fetchAll() {
   draw()
 }
 
+// paternal/sib are continuous; household + banner are binary (yes/no).
+const BINARY_METRICS = new Set(['same_household_history', 'same_banner'])
+function isBinaryMetric() { return BINARY_METRICS.has(metric.value) }
+
 function valueFor(wifeId) {
   const f = features.value.get(wifeId)
   if (!f || f._err) return { value: 0, missing: true }
@@ -92,10 +96,17 @@ function valueFor(wifeId) {
       v = Number(f.paternal_lineage_proximity ?? f.paternal_proximity ?? 0); break
     case 'shared_siblings':
       v = Number(f.shared_siblings ?? 0); break
-    case 'same_household_history':
-      v = Number(f.same_household_history ?? f.household_share ?? 0); break
-    case 'same_banner':
+    case 'same_household_history': {
+      const raw = f.same_household_history ?? f.household_share
+      if (raw === null || raw === undefined) return { value: 0, missing: true }
+      v = Number(raw) > 0 ? 1 : 0; break
+    }
+    case 'same_banner': {
+      if (f.same_banner === null || f.same_banner === undefined) {
+        return { value: 0, missing: true }
+      }
       v = f.same_banner ? 1 : 0; break
+    }
   }
   if (!Number.isFinite(v)) v = 0
   return { value: v, missing: false }
@@ -125,7 +136,8 @@ function draw() {
   const innerH = Math.max(20, h - margin.top - margin.bottom)
   const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`)
 
-  const maxV = d3.max(rows, d => d.value) || 1
+  const binary = isBinaryMetric()
+  const maxV = binary ? 1 : (d3.max(rows, d => d.value) || 1)
   const x = d3.scaleLinear().domain([0, Math.max(1e-9, maxV)]).range([0, innerW])
   const y = d3.scaleBand()
     .domain(rows.map(r => String(r.wife_id)))
@@ -133,9 +145,12 @@ function draw() {
     .padding(0.18)
 
   // Axes
+  const xAxis = binary
+    ? d3.axisBottom(x).tickValues([0, 1]).tickFormat(d => d === 1 ? 'yes' : 'no')
+    : d3.axisBottom(x).ticks(4).tickFormat(d3.format('.2~f'))
   g.append('g')
     .attr('transform', `translate(0,${innerH})`)
-    .call(d3.axisBottom(x).ticks(4).tickFormat(d3.format('.2~f')))
+    .call(xAxis)
     .call(s => s.selectAll('text').attr('font-size', 9).attr('fill', '#444'))
     .call(s => s.selectAll('path,line').attr('stroke', '#bbb'))
   g.append('g')
@@ -196,7 +211,7 @@ function draw() {
     .attr('dy', '0.35em')
     .attr('font-size', 9)
     .attr('fill', '#333')
-    .text(d => d3.format('.2~f')(d.value))
+    .text(d => binary ? (d.value === 1 ? 'yes' : 'no') : d3.format('.2~f')(d.value))
 }
 
 function onPanelResized({ ids } = {}) {
