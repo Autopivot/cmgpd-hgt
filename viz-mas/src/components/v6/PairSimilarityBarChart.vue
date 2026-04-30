@@ -229,14 +229,16 @@ onUnmounted(() => {
 <style scoped lang="less">
 .pair-sim-root {
   width: 100%;
-  min-height: 200px;
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   position: relative;
+  overflow: hidden;
 }
 .empty-state {
   width: 100%;
-  min-height: 200px;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;

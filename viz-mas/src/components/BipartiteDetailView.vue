@@ -95,13 +95,29 @@ function onAccepted(evt) {
   if (selectedPairs.value.length !== before) draw()
 }
 
-// ──────────────────────────────────────────────────────────────────────
-// Person click → husband emits person-selected (V5 picks up); wife shows
-// profile popup only.
-// ──────────────────────────────────────────────────────────────────────
+// Currently-highlighted husband id (drives the yellow ring + V6 activation).
+const selectedHusbandId = ref(null)
+
+function emitHusbandContext(husband_id) {
+  if (!husband_id) return
+  selectedHusbandId.value = husband_id
+  const candidates = (selectedPairs.value || [])
+    .filter(p => p.husband_id === husband_id)
+    .map(p => ({ wife_id: p.wife_id, score: p.score, score_gap: p.score_gap }))
+  bus.emit('husband-context', { husband_id, candidates })
+  draw()  // re-render so the highlight ring appears
+}
+
 async function onPersonClick(id, role) {
   if (role === 'husband') {
     bus.emit('person-selected', { id, role })
+    emitHusbandContext(id)
+  } else if (role === 'wife') {
+    // Wife click: fall back to whichever husband owns this candidate so V6
+    // still activates (matches the user expectation that any V4 click drives
+    // the right-column analysis).
+    const owner = (selectedPairs.value || []).find(p => p.wife_id === id)
+    if (owner) emitHusbandContext(owner.husband_id)
   }
   popup.value = { id, role, loading: true, profile: null }
   try {
@@ -227,16 +243,25 @@ function draw() {
       .text(txt)
   }
 
-  // Husband nodes (clickable → V5)
+  // Husband nodes (clickable → V5 + V6)
   svg.append('g').selectAll('g.h').data(husbands).enter().append('g').attr('class', 'h')
     .each(function (id) {
       const g = d3.select(this)
+      const isSel = id === selectedHusbandId.value
       g.attr('transform', `translate(${xH},${yH(id)})`)
         .style('cursor', 'pointer')
         .on('click', () => onPersonClick(id, 'husband'))
-      g.append('circle').attr('r', 6).attr('fill', '#1d9e75').attr('stroke', '#1a1a1a').attr('stroke-width', 0.7)
+      if (isSel) {
+        g.append('circle').attr('r', 10)
+          .attr('fill', 'none').attr('stroke', '#d4a85d').attr('stroke-width', 2.4)
+      }
+      g.append('circle').attr('r', 6)
+        .attr('fill', '#1d9e75')
+        .attr('stroke', isSel ? '#d4a85d' : '#1a1a1a')
+        .attr('stroke-width', isSel ? 1.6 : 0.7)
       g.append('text').attr('x', -10).attr('y', 4).attr('text-anchor', 'end')
-        .style('font-size', '10px').style('cursor', 'pointer').text(id)
+        .style('font-size', '10px').style('font-weight', isSel ? 700 : 400)
+        .style('cursor', 'pointer').text(id)
     })
 
   // Wife nodes (clickable → popup)

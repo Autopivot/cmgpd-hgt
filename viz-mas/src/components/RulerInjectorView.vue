@@ -55,6 +55,8 @@ section.macro { margin-bottom: 12px; }
 .macro-row {
   display: flex;
   gap: 8px;
-  & > * { flex: 1 1 0; min-width: 0; }
+  align-items: stretch;
+  height: 180px;
+  & > * { flex: 1 1 0; min-width: 0; height: 100%; }
 }
 </style>
