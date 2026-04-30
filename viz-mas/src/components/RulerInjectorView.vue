@@ -30,6 +30,14 @@
           </li>
         </ul>
       </div>
+      <div class="section">
+        <h3 class="tiny">MICRO MOTIFS — live detection</h3>
+        <MotifMatchList
+          :husband="husband"
+          :candidates="candidates"
+          :year="appState?.year ?? 1882"
+        />
+      </div>
       <div class="tiny muted footer">
         Sliders + checkboxes are pushed to the live MAS scorer in real time
         when the FastAPI backend at <code>:8001</code> is reachable.
@@ -41,10 +49,23 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, inject, onMounted, onUnmounted } from 'vue'
 import { getRules, postRules } from '../api/client.js'
 import bus from '../utils/eventbus.js'
 import MotifGlyph from './MotifGlyph.vue'
+import MotifMatchList from './v6/MotifMatchList.vue'
+
+const appState = inject('appState', null)
+
+// Live husband + candidate list streamed from V4 (BipartiteDetailView emits
+// `husband-context` whenever the user clicks a husband node). Powers the
+// MICRO MOTIFS live detection list below.
+const husband = ref(null)
+const candidates = ref([])
+function onHusbandContext({ husband_id, candidates: cs }) {
+  husband.value = husband_id ? { husband_id } : null
+  candidates.value = cs || []
+}
 
 const rules = ref({ macro: [], motifs: [] })
 const synced = ref(false)
@@ -80,6 +101,10 @@ onMounted(async () => {
   rules.value = r
   syncStatus.value = 'synced'
   synced.value = true
+  bus.on('husband-context', onHusbandContext)
+})
+onUnmounted(() => {
+  bus.off('husband-context', onHusbandContext)
 })
 </script>
 
