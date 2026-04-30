@@ -29,6 +29,13 @@
           <PairSimilarityBarChart :husband="husband" :candidates="candidates" />
         </div>
       </section>
+      <section class="rules">
+        <h3 class="section-head">RULE WEIGHTS</h3>
+        <RuleWeightsEditor
+          :husband="husband"
+          :readonly="(appState?.year ?? 1882) !== 1882"
+        />
+      </section>
       <section class="micro">
         <h3 class="section-head">MICRO MOTIFS</h3>
         <MotifMatchList
@@ -47,6 +54,7 @@ import bus from '../utils/eventbus.js'
 import MacroCombinedChart from './v6/MacroCombinedChart.vue'
 import PairSimilarityBarChart from './v6/PairSimilarityBarChart.vue'
 import MotifMatchList from './v6/MotifMatchList.vue'
+import RuleWeightsEditor from './v6/RuleWeightsEditor.vue'
 import { getCellRules, postCellRules } from '../api/client.js'
 
 const appState = inject('appState', null)
@@ -232,6 +240,27 @@ async function saveCellRules() {
 watch(
   () => `${appState?.year ?? 1882}|${currentCellId.value}`,
   () => { if (currentCellId.value != null) refreshCellRules() }
+)
+
+// In transfer mode (1885+), the editor's husband-change watch resets sliders
+// to defaults whenever a new husband arrives. Re-broadcast the cached cell
+// profile after each husband swap so the editor's read-only sliders pick up
+// the saved 1882 weights again.
+watch(
+  () => husband.value?.husband_id,
+  (hid) => {
+    if (!hid) return
+    if ((appState?.year ?? 1882) === 1882) return
+    if (!cellRules.value) return
+    bus.emit('cell-rules-updated', {
+      cell_id: currentCellId.value,
+      year: 1882,
+      weights: cellRules.value.weights || {},
+      motifs_enabled: cellRules.value.motifs_enabled || {},
+      n_husbands: cellRules.value.n_husbands ?? 0,
+      updated_at: cellRules.value.updated_at || null,
+    })
+  },
 )
 
 onMounted(() => {

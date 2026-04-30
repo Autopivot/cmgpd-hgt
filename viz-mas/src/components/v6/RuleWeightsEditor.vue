@@ -90,6 +90,10 @@ const state = reactive({
 const HUSBAND_PREFIX = 'cmgpd-cell-rules-husband-'
 
 function loadFor(husband_id) {
+  // In readonly (transfer) mode the source of truth is the bound cell
+  // profile, not the per-husband localStorage sheet. Skip the reset so we
+  // don't briefly flash defaults before the cell-rules-updated event lands.
+  if (props.readonly) return
   Object.assign(state.weights, DEFAULT_WEIGHTS())
   Object.assign(state.motifs_enabled, DEFAULT_MOTIFS())
   try {

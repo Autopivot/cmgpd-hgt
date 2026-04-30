@@ -15,6 +15,28 @@
     "weights": {},
     "year": 1882
   },
+  "1882|136": {
+    "cell_id": 136,
+    "motifs_enabled": {
+      "CTX_co_resident": true,
+      "CTX_same_banner": true,
+      "CTX_same_community": true,
+      "CTX_same_region": true,
+      "M01_direct_sibling": true,
+      "M02_shared_father_via_fs_fd": true,
+      "M03_two_degree_sibling_chain": true,
+      "M10_household_mediated_daughter": true
+    },
+    "n_husbands": 5,
+    "updated_at": "2026-04-30T19:41:45+00:00",
+    "weights": {
+      "paternal_lineage_proximity": 1.15,
+      "same_banner": 1.25,
+      "same_household_history": 1.1199999999999999,
+      "shared_siblings": 1.1400000000000001
+    },
+    "year": 1882
+  },
   "1882|17": {
     "cell_id": 17,
     "motifs_enabled": {
