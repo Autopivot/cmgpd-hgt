@@ -153,7 +153,81 @@ def _detect_cached(husband_id: str, wife_id: str, year: int) -> dict:
             "expected_coverage_pct": cat.get("expected_coverage_pct"),
         })
 
+    # Augment with non-kin "context motifs" — banner/community/co-residence
+    # overlap. These aren't in the seal catalog (which is kinship-only) but
+    # historians want to see *something* on hard-negative candidates that have
+    # no kin path to the husband. Renders the same way in MotifMiniGlyph.
+    for ctx in _context_motifs(husband_id, wife_id):
+        motif_ids.append(ctx["id"])
+        details.append(ctx)
+
     return {"motif_ids": motif_ids, "details": details}
+
+
+_CTX_MOTIFS = [
+    {
+        "id": "CTX_same_banner",
+        "name_en": "same banner",
+        "explanation_en": "x and y share the same banner affiliation. Banner endogamy was the dominant marriage rule for Qing bannermen households; cross-banner unions required permission and are notably rarer in CMGPD-LN.",
+        "relations": ["r_banner_endogamy"],
+        "historical_meaning": "Banner-endogamous match.",
+    },
+    {
+        "id": "CTX_same_community",
+        "name_en": "same community",
+        "explanation_en": "x and y were registered in the same community (village/garrison) cluster. Same-community marriages were the practical norm given travel constraints.",
+        "relations": ["r_co_community"],
+        "historical_meaning": "Community-local match.",
+    },
+    {
+        "id": "CTX_co_resident",
+        "name_en": "co-resident at some panel year",
+        "explanation_en": "x and y shared the same HOUSEHOLD_ID in at least one CMGPD-LN wave. Possible adoption, fostering, or pre-marriage residence.",
+        "relations": ["r_co_household"],
+        "historical_meaning": "Shared household at some point.",
+    },
+    {
+        "id": "CTX_same_region",
+        "name_en": "same region",
+        "explanation_en": "x and y were registered in the same broad region (e.g. North Liaoning). Weaker than community overlap but still constrains how far the marriage market reached.",
+        "relations": ["r_co_region"],
+        "historical_meaning": "Region-local match.",
+    },
+]
+
+
+def _context_motifs(husband_id: str, wife_id: str) -> list[dict]:
+    """Profile/parquet-driven non-kin motif checks. Cheap; no graph BFS."""
+    out: list[dict] = []
+    try:
+        from ..mas import profiles as _profiles
+        _profiles._load()
+        h = _profiles._cache.get(_strip_prefix(husband_id))
+        w = _profiles._cache.get(_strip_prefix(wife_id))
+    except Exception:
+        h = w = None
+    if h and w:
+        bh, bw = h.get("banner_id"), w.get("banner_id")
+        if bh is not None and bw is not None and bh == bw:
+            out.append({**_CTX_MOTIFS[0], "length": 1, "supporting_path_count": 1, "expected_coverage_pct": None})
+        ch, cw = h.get("community_id"), w.get("community_id")
+        if ch is not None and cw is not None and ch == cw:
+            out.append({**_CTX_MOTIFS[1], "length": 1, "supporting_path_count": 1, "expected_coverage_pct": None})
+        # Region overlap is the weakest geographic context but very informative
+        # for hard-negatives that share neither banner nor community.
+        rh, rw = h.get("region_id"), w.get("region_id")
+        if rh is not None and rw is not None and rh == rw:
+            out.append({**_CTX_MOTIFS[3], "length": 1, "supporting_path_count": 1, "expected_coverage_pct": None})
+
+    # Co-residence — use the household-history axis already loaded for V6
+    # similarity. Imported lazily to avoid a circular at module init.
+    try:
+        from .pair_features_endpoint import _same_household_history, _strip_prefix as _sp
+        if _same_household_history(_sp(husband_id), _sp(wife_id)) > 0:
+            out.append({**_CTX_MOTIFS[2], "length": 1, "supporting_path_count": 1, "expected_coverage_pct": None})
+    except Exception:
+        pass
+    return out
 
 
 # ── Route ────────────────────────────────────────────────────────────

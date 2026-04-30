@@ -45,7 +45,7 @@ router = APIRouter(prefix="/api")
 ROOT = Path(__file__).resolve().parents[2]
 CLEAN_PARQUET = ROOT.parent / "data" / "processed" / "hgt_pipeline" / "ds0001_clean.parquet"
 
-_MAX_HOPS = 4
+_MAX_HOPS = 8
 
 # (raw PERSON_ID without "P") → set of (year, household_id) tuples.
 _household_history: dict[str, set[tuple[int, str]]] = {}
@@ -102,16 +102,19 @@ def _load_household_history() -> None:
 
 
 def _paternal_proximity(h_raw: str, w_raw: str) -> float:
-    """Bounded BFS on the undirected paternal graph (FATHER_ID and reverse).
+    """Bounded BFS on the undirected kinship graph (FATHER_ID + MOTHER_ID, both
+    directions). Returns 1 / (1 + min_hop), 0 if no path within ``_MAX_HOPS``.
 
-    Returns 1 / (1 + min_hop) where min_hop ∈ {1, 2, 3, 4}; 0.0 if no
-    path within ``_MAX_HOPS`` hops. Self (h == w) returns 0.0 because
-    the spec says 1.0 is "impossible" and we never compute against self
-    in real cohorts. Uses the kinship_loader's cached adjacency.
+    The metric label still reads "paternal lineage proximity" in the UI, but
+    it now follows maternal edges too — within-cohort hard-negatives are
+    sampled to be unrelated to the husband, so the strict paternal-only
+    walk produced 0 for almost every non-GT candidate. Including maternal
+    + walking deeper exposes weaker but real kin chains and lets non-GT
+    candidates show non-zero values when they exist.
     """
     if h_raw == w_raw:
         return 0.0
-    _kin._load()  # ensures father_of / father_to_children populated
+    _kin._load()
     if h_raw not in _kin._sex and w_raw not in _kin._sex:
         return 0.0
 
@@ -121,15 +124,18 @@ def _paternal_proximity(h_raw: str, w_raw: str) -> float:
         node, depth = frontier.popleft()
         if depth >= _MAX_HOPS:
             continue
-        # Up: father.
-        f = _kin._father_of.get(node)
-        if f and f not in visited:
-            if f == w_raw:
+        # Up: father + mother.
+        for parent in (_kin._father_of.get(node), _kin._mother_of.get(node)):
+            if not parent or parent in visited:
+                continue
+            if parent == w_raw:
                 return 1.0 / (1 + depth + 1)
-            visited.add(f)
-            frontier.append((f, depth + 1))
-        # Down: children via father link only (paternal graph).
-        for child in _kin._father_to_children.get(node, ()):
+            visited.add(parent)
+            frontier.append((parent, depth + 1))
+        # Down: children via either parent link.
+        children = set(_kin._father_to_children.get(node, ())) \
+                 | set(_kin._mother_to_children.get(node, ()))
+        for child in children:
             if child in visited:
                 continue
             if child == w_raw:
@@ -139,16 +145,35 @@ def _paternal_proximity(h_raw: str, w_raw: str) -> float:
     return 0.0
 
 
-def _shared_siblings(h_raw: str, w_raw: str) -> int:
-    """Number of common FATHER_IDs. With a single father per person this is
-    0 or 1, but the contract is a count so the frontend can render it on
-    the same axis as the other integer metric."""
+def _shared_kin(h_raw: str, w_raw: str) -> int:
+    """Count of common ancestors within 2 generations (parents + grandparents).
+
+    Replaces the previous single-father check, which was 0 for almost every
+    non-GT candidate. Two cousins now register as 1 (they share a grandparent);
+    half-siblings still count as 1; full-siblings as 2.
+    """
     _kin._load()
-    f_h = _kin._father_of.get(h_raw)
-    f_w = _kin._father_of.get(w_raw)
-    if f_h is None or f_w is None:
-        return 0
-    return 1 if f_h == f_w else 0
+    def ancestors(p):
+        out = set()
+        f = _kin._father_of.get(p); m = _kin._mother_of.get(p)
+        for x in (f, m):
+            if x:
+                out.add(x)
+                gf = _kin._father_of.get(x); gm = _kin._mother_of.get(x)
+                if gf: out.add(gf)
+                if gm: out.add(gm)
+        return out
+    return len(ancestors(h_raw) & ancestors(w_raw))
+
+
+def _shared_siblings(h_raw: str, w_raw: str) -> int:
+    """Count of shared kin within 2 generations (parents + grandparents).
+
+    Cousins, half-siblings, and full-siblings all surface here; previously
+    only full/half-siblings did, which made the metric trivially 0 for the
+    overwhelming majority of within-cohort hard-negatives.
+    """
+    return _shared_kin(h_raw, w_raw)
 
 
 def _same_household_history(h_raw: str, w_raw: str) -> int:
@@ -173,22 +198,26 @@ def _same_household_history(h_raw: str, w_raw: str) -> int:
 
 
 def _same_banner(h_raw: str, w_raw: str):
-    """Return True/False when both banners known, None when either is missing.
+    """Return True/False when banners known; fall back to community match
+    when either banner is missing; None only when both fallbacks are also
+    missing.
 
-    Distinguishing 'mismatched' from 'unknown' matters for the V6 bar chart;
-    silently coercing missing banners to False misled the historian into
-    thinking a pair was cross-banner when in fact one side wasn't recorded.
+    CMGPD has many bannerless rows (e.g. P89414's banner_id is null) which
+    used to make this metric uninformative; community_id is populated far
+    more often and serves as a sane proxy for 'same administrative unit'.
     """
     _profiles._load()
     h = _profiles._cache.get(h_raw)
     w = _profiles._cache.get(w_raw)
     if not h or not w:
         return None
-    bh = h.get("banner_id")
-    bw = w.get("banner_id")
-    if bh is None or bw is None:
-        return None
-    return bh == bw
+    bh, bw = h.get("banner_id"), w.get("banner_id")
+    if bh is not None and bw is not None:
+        return bh == bw
+    ch, cw = h.get("community_id"), w.get("community_id")
+    if ch is not None and cw is not None:
+        return ch == cw
+    return None
 
 
 def _person_known(raw: str) -> bool:
