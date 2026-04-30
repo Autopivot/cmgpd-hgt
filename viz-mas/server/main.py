@@ -81,6 +81,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- v6 auxiliary routers ---
+from .api.motif_endpoint import router as motif_router  # noqa: E402
+app.include_router(motif_router)
+
 # ── Cohort cache ──────────────────────────────────────────────────────
 _cohort_cache: dict[tuple[int, str], dict] = {}
 
