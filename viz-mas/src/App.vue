@@ -40,6 +40,14 @@
         <button class="btn" @click="resetSelection">Reset</button>
       </div>
     </div>
+    <div class="mode-banner" :class="state.year === 1882 ? 'training' : 'transfer'">
+      <template v-if="state.year === 1882">
+        🟢 training mode · 1882 (full GT) — V6 weight sliders adjustable, "save to cell" persists per-hex rule profiles
+      </template>
+      <template v-else>
+        🔵 transfer mode · {{ state.year }} (no GT) — V6 cell rules loaded from 1882; sliders read-only and feed MAS as soft prior
+      </template>
+    </div>
     <div class="body" ref="bodyRef">
       <div class="col col-left" :style="{ flexBasis: colPct[0] + '%' }">
         <div class="cell cell-upper" :class="{ fullscreen: state.fullscreen === 'v1' }"
@@ -383,6 +391,16 @@ onUnmounted(() => {
       &.on { color: #1a1a1a; background: #8aff96; border-color: #3a7a46; }
     }
   }
+}
+.mode-banner {
+  height: 18px;
+  padding: 0 10px;
+  display: flex; align-items: center;
+  font-size: 11px;
+  letter-spacing: 0.2px;
+  border-bottom: 1px solid #c8bfa8;
+  &.training { background: #e3f1e1; color: #0a4a3a; }
+  &.transfer { background: #e1ecf3; color: #1a3a4a; }
 }
 .body {
   flex: 1;

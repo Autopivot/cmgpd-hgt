@@ -212,6 +212,23 @@ const REVEAL_GT_KEY = 'cmgpd-v5-reveal-gt'
 const revealGT = ref(localStorage.getItem(REVEAL_GT_KEY) === '1')
 watch(revealGT, v => { try { localStorage.setItem(REVEAL_GT_KEY, v ? '1' : '0') } catch {} })
 
+// 1882-learned per-cell rule prior. V6 emits 'cell-rules-updated' whenever
+// the user picks a hex cell (transfer mode loads the saved profile; training
+// mode broadcasts the analyst's live edits). We forward this along with the
+// next /negotiate request so the backend MAS prompts can fold it in.
+const cellRules = ref(null)
+function onCellRulesUpdated(payload) {
+  if (!payload || (!payload.weights && !payload.motifs_enabled)) {
+    cellRules.value = null
+    return
+  }
+  cellRules.value = {
+    cell_id: payload.cell_id ?? null,
+    weights: payload.weights || {},
+    motifs_enabled: payload.motifs_enabled || {},
+  }
+}
+
 const husband = ref(null)        // { id, ... }
 const husbandProfile = ref(null) // { sex, birth_year, banner_id, ... } from "stage:profile"
 const candidates = ref([])       // raw candidates from "stage:filter"
@@ -352,7 +369,9 @@ async function startBattle() {
       year: appState.year,
       ablation: appState.ablation,
       auto_commit: false,
+      cell_rules: cellRules.value,
     })
+    if (cellRules.value) logSys(`cell rules attached → bias from 1882 cell #${cellRules.value.cell_id ?? '?'}`, 'sys')
   } catch (e) {
     logSys(`POST /negotiate failed: ${e.message || e}`, 'err')
     streamState.value = 'error'
@@ -713,10 +732,12 @@ watch(() => `${appState.year}|${appState.ablation}`, () => {
 onMounted(() => {
   bus.on('hex-select', onHexSelect)
   bus.on('person-selected', onPersonSelected)
+  bus.on('cell-rules-updated', onCellRulesUpdated)
 })
 onUnmounted(() => {
   bus.off('hex-select', onHexSelect)
   bus.off('person-selected', onPersonSelected)
+  bus.off('cell-rules-updated', onCellRulesUpdated)
   closeWS()
 })
 </script>

@@ -128,11 +128,37 @@ function onPanelResized({ ids } = {}) {
   draw()
 }
 
+// Bound cell IDs (those with a saved 1882 rule profile). Drives the
+// gold-dot indicator on V3 hexes. Refreshed on cohort load + on
+// 'cell-rules-updated' bus events so a save lights up the dot live.
+const boundCellIds = ref(new Set())
+
+async function refreshBoundCells() {
+  try {
+    const r = await fetch('/api/cell-rules')
+    if (!r.ok) return
+    const j = await r.json()
+    boundCellIds.value = new Set((j.bound || []).map(b => Number(b.cell_id)))
+  } catch { /* network / 503 — leave empty */ }
+}
+
 async function load() {
   loading.value = true
   error.value = null
   try {
     data = await getEmbedding({ year: appState.year, ablation: appState.ablation })
+    // Transfer mode: project the 1882 contour onto the current cohort so the
+    // background heatmap is shared across years (analyst can read cells
+    // against a stable reference). 1882 itself uses its own train_ref_coords.
+    if (appState.year !== 1882) {
+      try {
+        const ref = await getEmbedding({ year: 1882, ablation: appState.ablation })
+        if (Array.isArray(ref?.train_ref_coords) && ref.train_ref_coords.length) {
+          data = { ...data, train_ref_coords: ref.train_ref_coords, train_ref_n: ref.train_ref_n }
+        }
+      } catch { /* fall through with cohort-local contour */ }
+    }
+    await refreshBoundCells()
     loading.value = false
     draw()
   } catch (e) {
@@ -141,6 +167,8 @@ async function load() {
     console.warn(e)
   }
 }
+
+function onCellRulesUpdated() { refreshBoundCells().then(() => draw()) }
 
 function redraw() { draw() }
 
@@ -316,6 +344,7 @@ function drawHoneycomb(svg, layout, W, H) {
     width: W, height: H, marginPx: MARGIN_PX,
     colorBy: colorMode.value,
     showStripes: colorMode.value === 'gap',
+    boundCellIds: boundCellIds.value,
   }
   renderHoneycomb(svg, layout, opts)
 }
@@ -578,6 +607,7 @@ onMounted(() => {
   bus.on('match-accepted', onAccepted)
   bus.on('match-restored', onRestored)
   bus.on('hex-clear', onExternalClear)
+  bus.on('cell-rules-updated', onCellRulesUpdated)
   if (svgRef.value) {
     svgRef.value.addEventListener('cell-clicked', onCanonicalCellClick)
     svgRef.value.addEventListener('cell-hovered', onCanonicalCellHover)
@@ -589,6 +619,7 @@ onUnmounted(() => {
   bus.off('match-accepted', onAccepted)
   bus.off('match-restored', onRestored)
   bus.off('hex-clear', onExternalClear)
+  bus.off('cell-rules-updated', onCellRulesUpdated)
   if (svgRef.value) {
     svgRef.value.removeEventListener('cell-clicked', onCanonicalCellClick)
     svgRef.value.removeEventListener('cell-hovered', onCanonicalCellHover)

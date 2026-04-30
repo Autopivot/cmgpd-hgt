@@ -183,6 +183,8 @@ def _shap_components(pair: dict) -> list[dict[str, Any]]:
 # --- v6 auxiliary routers ---
 from .api.macro_endpoint import router as macro_router
 app.include_router(macro_router)
+from .api.cell_rules_endpoint import router as cell_rules_router  # noqa: E402
+app.include_router(cell_rules_router)
 
 
 # ── HTTP endpoints ────────────────────────────────────────────────────
@@ -374,10 +376,12 @@ class _NegotiateStartBody(BaseModel):
     year: int
     ablation: str = "ablated"
     auto_commit: bool = False
+    cell_rules: dict | None = None
 
 
 async def _run_orchestrator(
     husband_id: str, year: int, ablation: str, auto_commit: bool,
+    cell_rules: dict | None = None,
 ) -> None:
     """Background entrypoint: marks the session active for the duration of
     the orchestrator run so /advance can answer 404 vs 200 correctly, and
@@ -395,6 +399,7 @@ async def _run_orchestrator(
             advance_event=mas_state.get_advance_event(husband_id),
             hint_queue=mas_state.get_hint_queue(husband_id),
             auto_commit=auto_commit,
+            cell_rules=cell_rules,
         )
     except Exception as e:   # noqa: BLE001
         log.exception("orchestrator failed for %s: %s", husband_id, e)
@@ -423,7 +428,10 @@ async def api_negotiate_start(husband_id: str, body: _NegotiateStartBody):
     # this 200 doesn't see "no active session".
     mas_state.mark_session_active(husband_id)
     asyncio.create_task(
-        _run_orchestrator(husband_id, body.year, body.ablation, body.auto_commit),
+        _run_orchestrator(
+            husband_id, body.year, body.ablation, body.auto_commit,
+            cell_rules=body.cell_rules,
+        ),
     )
     return {
         "status": "started",

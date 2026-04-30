@@ -47,6 +47,9 @@ export function renderHoneycomb(svgEl, layout, opts = {}) {
     const marginPx = opts.marginPx ?? 40;
     const colorBy = opts.colorBy ?? 'gap';
     const showStripes = opts.showStripes ?? (colorBy === 'gap');
+    const boundCellIds = opts.boundCellIds instanceof Set
+        ? opts.boundCellIds
+        : new Set(Array.isArray(opts.boundCellIds) ? opts.boundCellIds.map(Number) : []);
 
     // Sequential mode needs the cohort-local score range to anchor the ramp.
     let scoreMin = 0, scoreMax = 1;
@@ -230,10 +233,29 @@ export function renderHoneycomb(svgEl, layout, opts = {}) {
     }
     svgEl.appendChild(gBorders);
 
-    // (Layer 4 — per-cluster score-gap mini-histograms — removed by user
-    // request: the bars added clutter without adding signal beyond what the
-    // diverging cell fill already shows. The cell colors are the
-    // distribution.)
+    // ----- Layer 4: bound-cell indicator dots -----
+    // A small gold dot at each cell with a saved 1882 rule profile, so the
+    // analyst can see at a glance which regions of the kinship-embedding
+    // space already have a transferable calibration.
+    if (boundCellIds.size) {
+        const gBound = document.createElementNS(SVG_NS, 'g');
+        gBound.setAttribute('class', 'hex-bound-dots');
+        gBound.setAttribute('pointer-events', 'none');
+        for (const cell of layout.cells) {
+            if (!boundCellIds.has(Number(cell.id))) continue;
+            const [cx, cy] = project(cell.cx, cell.cy);
+            const dot = document.createElementNS(SVG_NS, 'circle');
+            dot.setAttribute('class', 'cell-bound-dot');
+            dot.setAttribute('cx', cx.toFixed(2));
+            dot.setAttribute('cy', cy.toFixed(2));
+            dot.setAttribute('r', '2.6');
+            dot.setAttribute('fill', '#d4a85d');
+            dot.setAttribute('stroke', '#1a1a1a');
+            dot.setAttribute('stroke-width', '0.5');
+            gBound.appendChild(dot);
+        }
+        svgEl.appendChild(gBound);
+    }
 }
 
 // ============================================================================

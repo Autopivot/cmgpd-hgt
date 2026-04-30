@@ -91,6 +91,50 @@ ROUND_FOCUS = {
 PublishFn = Callable[[dict[str, Any]], Awaitable[None]]
 
 
+_METRIC_LABELS = {
+    "paternal_lineage_proximity": "paternal lineage proximity",
+    "shared_siblings": "shared siblings",
+    "same_household_history": "same household history",
+    "same_banner": "same banner",
+}
+
+
+def _format_cell_rules_block(cell_rules: dict | None) -> str:
+    """Render the 1882 per-cell prior into a system-prompt block.
+
+    Empty / falsy input → empty string (no block emitted, MAS behaves as
+    before the patch). Non-empty → a labelled section explaining that the
+    weights are a SOFT prior the LLM should fold into its scoring.
+    """
+    if not cell_rules:
+        return ""
+    weights = cell_rules.get("weights") or {}
+    motifs = cell_rules.get("motifs_enabled") or {}
+    lines = ["PRIOR CALIBRATION FROM 1882 COHORT (same MDS region):"]
+    for k in ("paternal_lineage_proximity", "shared_siblings",
+              "same_household_history", "same_banner"):
+        if k not in weights:
+            continue
+        try:
+            w = float(weights[k])
+        except (TypeError, ValueError):
+            continue
+        lines.append(f"  - {_METRIC_LABELS.get(k, k)}: weight {w:.2f}")
+    on = sorted([m for m, v in motifs.items() if v])
+    off = sorted([m for m, v in motifs.items() if v is False])
+    if on:
+        lines.append(f"  Active motifs: {', '.join(on)}.")
+    if off:
+        lines.append(f"  Suppressed motifs: {', '.join(off)}.")
+    lines.append(
+        "  Treat these weights as a SOFT prior — they reflect how much each "
+        "similarity feature mattered for accepted matches at this point in the "
+        "kinship-embedding space last cohort. Adjust your scoring accordingly "
+        "when candidates differ along these dimensions."
+    )
+    return "\n".join(lines) + "\n"
+
+
 # ── Helpers ───────────────────────────────────────────────────────────
 
 
@@ -365,6 +409,7 @@ async def _persona_call(
 async def _query_call(
     *, husband_id: str, husband_persona: dict, candidates: list[dict],
     round_focus: str, hint_log: dict[str, list[str]], round_n: int,
+    cell_rules_block: str = "",
 ) -> dict[str, dict]:
     """Single husband call returning {cid: {score: float, reason: str, query: str}}.
 
@@ -393,6 +438,7 @@ async def _query_call(
             round_focus=round_focus,
             candidate_block=cand_block,
             hint_block=_hint_block(hint_log, "target"),
+            cell_rules_block=cell_rules_block or "",
         )
         result = await chat_json(
             messages=[
@@ -487,12 +533,15 @@ async def mas_negotiate_rounds(
     advance_event: asyncio.Event,
     hint_queue: asyncio.Queue,
     auto_commit: bool = False,
+    cell_rules: dict | None = None,
 ) -> None:
     hint_log: dict[str, list[str]] = {}
+    cell_rules_block = _format_cell_rules_block(cell_rules)
 
     # ── start ──
     await publish({"type": "start", "husband_id": husband_id,
-                   "year": year, "ablation": ablation})
+                   "year": year, "ablation": ablation,
+                   "cell_rules_attached": bool(cell_rules)})
 
     # ── stage:profile ──
     husband = get_profile(husband_id)
@@ -598,6 +647,7 @@ async def mas_negotiate_rounds(
             husband_id=husband_id, husband_persona=husband_persona,
             candidates=candidates, round_focus=focus, hint_log=hint_log,
             round_n=round_n,
+            cell_rules_block=cell_rules_block,
         )
 
         # Emit one query frame per candidate (preserves cohort ordering).
