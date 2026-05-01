@@ -7,6 +7,36 @@
       <button class="fs-btn" @click="bus.emit('full-screen', 'v1')" title="Full screen">⛶</button>
     </div>
     <div class="panel-body" ref="wrapRef">
+      <!-- ── Indexer: type a person id, jump through every hex cell that
+           contains one of their pairs. Each step dispatches hex-select
+           on V3 + person-selected/husband-context on V4 → V5/V6. ── -->
+      <div class="indexer">
+        <input class="ix-input"
+               v-model="searchId"
+               placeholder="person id (e.g. P101000)"
+               @keydown.enter="locate"
+               :disabled="locating" />
+        <button class="ix-btn" @click="locate" :disabled="locating || !searchId.trim()">
+          {{ locating ? '…' : 'find' }}
+        </button>
+        <template v-if="ix.cells.length">
+          <span class="ix-summary tiny">
+            {{ ix.role || 'person' }} {{ ix.id }} · {{ ix.cells.length }} cell(s)
+          </span>
+          <button class="ix-btn step" @click="stepIx(-1)" title="previous cell">◀</button>
+          <span class="ix-counter tiny">
+            {{ ix.cursor + 1 }}/{{ ix.cells.length }} · #{{ ix.cells[ix.cursor] }}
+          </span>
+          <button class="ix-btn step primary" @click="stepIx(+1)" title="next cell">▶</button>
+        </template>
+        <span v-else-if="ix.searched" class="ix-msg tiny muted">
+          {{ ix.error || 'not found in current cohort' }}
+        </span>
+      </div>
+      <div v-if="ix.cells.length" class="ix-cell-list tiny muted">
+        cells: {{ ix.cells.join(', ') }}
+        <span v-if="ix.dropped">· {{ ix.dropped }} pair(s) dropped by per-cell cap</span>
+      </div>
       <svg ref="svgRef" class="curve-svg"></svg>
       <div class="legend tiny" v-if="evalMode">
         <span class="sw mas"></span>MAS recall@1 vs accepted relations
@@ -40,7 +70,8 @@
 <script setup>
 import { ref, inject, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import * as d3 from 'd3'
-import { getEvalProgress, resetEvalLog, loadCohort } from '../api/client.js'
+import { getEvalProgress, resetEvalLog, loadCohort, getEmbedding } from '../api/client.js'
+import { buildHoneycomb } from '../canonical/cluster_layout.js'
 import bus from '../utils/eventbus.js'
 
 const appState = inject('appState')
@@ -56,6 +87,98 @@ const data = ref({
 })
 const totalHusbands = ref(0)
 const cohortStats = ref(null)  // { n_pairs, n_husbands, mean, median, p25, p75, p90, min, max, scores: number[] }
+
+// ── Indexer state ────────────────────────────────────────────────────────
+const searchId = ref('')
+const locating = ref(false)
+const ix = ref({
+  id: null,                  // normalized id (with leading P)
+  role: null,                // 'husband' | 'wife' (resolved from first match)
+  cells: [],                 // [cellId, cellId, ...] in ascending order
+  cursor: 0,                 // index into cells
+  byCell: new Map(),         // cellId → [{ pairIdx, role, pair }]
+  layout: null,              // cached buildHoneycomb output (for re-emitting)
+  cohort: null,              // cached cohort data
+  dropped: 0,                // # of pairs whose cell was saturated
+  searched: false,
+  error: null,
+})
+
+function _norm(id) {
+  const s = String(id).trim()
+  if (!s) return ''
+  return s.startsWith('P') ? s : `P${s}`
+}
+
+async function locate() {
+  const id = _norm(searchId.value)
+  if (!id) return
+  locating.value = true
+  try {
+    const cohort = await getEmbedding({ year: appState.year, ablation: appState.ablation })
+    const layout = buildHoneycomb({
+      pairs: cohort.pairs, mds_coords: cohort.mds_coords,
+      clusters: cohort.clusters, k_clusters: cohort.k_clusters,
+    })
+    const byCell = new Map()
+    let dropped = 0
+    let role = null
+    cohort.pairs.forEach((p, i) => {
+      const r = p.husband_id === id ? 'husband'
+              : p.wife_id === id    ? 'wife'    : null
+      if (!r) return
+      role = role || r
+      const cell = layout.cells.find(c => c.pairIds && c.pairIds.includes(i))
+      if (!cell) { dropped += 1; return }
+      if (!byCell.has(cell.id)) byCell.set(cell.id, [])
+      byCell.get(cell.id).push({ pairIdx: i, role: r, pair: p })
+    })
+    const cells = Array.from(byCell.keys()).sort((a, b) => a - b)
+    ix.value = {
+      id, role, cells, cursor: 0,
+      byCell, layout, cohort, dropped, searched: true,
+      error: cells.length ? null : (role ? 'every pair dropped by per-cell cap' : 'id not in this cohort'),
+    }
+    if (cells.length) emitForCursor()
+  } finally {
+    locating.value = false
+  }
+}
+
+function emitForCursor() {
+  const { cells, cursor, byCell, layout, cohort, id } = ix.value
+  if (!cells.length) return
+  const cellId = cells[cursor]
+  const cell = layout.cells.find(c => c.id === cellId)
+  if (!cell) return
+  const pairs = cell.pairIds.map(i => cohort.pairs[i])
+  bus.emit('hex-select', {
+    binKey: `cell:${cellId}`,
+    cell_id: cellId,
+    pairIds: cell.pairIds.slice(),
+    pairs,
+  })
+  // Brief gap so V4 can rebind before we emit the person click event chain.
+  const matchPair = byCell.get(cellId)?.[0]
+  if (!matchPair) return
+  setTimeout(() => {
+    bus.emit('person-selected', { id, role: matchPair.role })
+    if (matchPair.role === 'husband') {
+      const candidates = pairs
+        .filter(p => p.husband_id === id)
+        .map(p => ({ wife_id: p.wife_id, score: p.score, score_gap: p.score_gap }))
+      bus.emit('husband-context', { husband_id: id, candidates })
+    }
+  }, 250)
+}
+
+function stepIx(delta) {
+  const { cells } = ix.value
+  if (!cells.length) return
+  const n = cells.length
+  ix.value.cursor = ((ix.value.cursor + delta) % n + n) % n
+  emitForCursor()
+}
 
 const evalMode = computed(() => appState.year === 1882)
 
@@ -295,6 +418,37 @@ onUnmounted(() => {
 
 <style lang="less" scoped>
 .panel-body { display: flex; flex-direction: column; gap: 4px; }
+.indexer {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 11px; padding: 2px 0;
+  flex-wrap: wrap;
+  .ix-input {
+    flex: 1 1 140px; min-width: 100px;
+    height: 22px; font-size: 11px;
+    padding: 0 6px;
+    font-family: Monaco, monospace;
+    border: 1px solid #888; border-radius: 3px;
+    background: #fff; color: #1a1a1a;
+    &:focus { border-color: #d4a85d; outline: none; }
+  }
+  .ix-btn {
+    font-size: 10px; padding: 1px 6px;
+    border: 1px solid #888; border-radius: 3px;
+    background: #f5f5f5; color: #1a1a1a; cursor: pointer;
+    &:hover:not(:disabled) { background: #ffe082; border-color: #d4a85d; }
+    &:disabled { opacity: 0.4; cursor: not-allowed; }
+    &.primary { background: #ffe082; border-color: #d4a85d; font-weight: 600; }
+    &.step { padding: 1px 5px; }
+  }
+  .ix-summary { color: #6b5736; font-style: italic; }
+  .ix-counter { font-variant-numeric: tabular-nums; color: #444; padding: 0 2px; }
+  .ix-msg { color: #993c1d; }
+}
+.ix-cell-list {
+  font-family: Monaco, monospace;
+  padding: 0 2px 4px 2px;
+  word-break: break-all;
+}
 .curve-svg { width: 100%; flex: 1 1 auto; min-height: 140px; }
 .legend {
   display: flex; align-items: center; gap: 12px;
