@@ -48,6 +48,12 @@
             <div class="cohort-info tiny muted">
               cohort {{ appState.year }} ({{ appState.ablation }}) ·
               {{ candidates.length }} top candidates
+              <span v-if="revealGT && gtCandidate" class="gt-spouse" title="cohort JSON ground-truth wife">
+                · 🟢 GT spouse: c-{{ gtCandidate.id }}
+              </span>
+              <span v-else-if="revealGT && agents.length" class="gt-spouse-missing tiny muted">
+                · GT spouse not in current candidates
+              </span>
             </div>
           </div>
         </div>
@@ -225,6 +231,7 @@ const REVEAL_GT_KEY = 'cmgpd-v5-reveal-gt'
 const revealGT = ref(localStorage.getItem(REVEAL_GT_KEY) === '1')
 watch(revealGT, v => { try { localStorage.setItem(REVEAL_GT_KEY, v ? '1' : '0') } catch {} })
 
+
 // V5 life-history popup target. Click 🔍 life on the husband row or any
 // candidate card to populate; PersonLifePopup auto-fetches narrative + LLM
 // paragraph and renders the income chart with a vertical cohort marker.
@@ -255,6 +262,9 @@ const husband = ref(null)        // { id, ... }
 const husbandProfile = ref(null) // { sex, birth_year, banner_id, ... } from "stage:profile"
 const candidates = ref([])       // raw candidates from "stage:filter"
 const agents = ref([])           // per-candidate cards (mirrors candidates + LLM scores)
+// Cohort-JSON GT wife (label===1) among currently loaded candidates. Drives
+// the V5 husband-row '🟢 GT spouse: c-XXX' chip when the 👁 GT toggle is on.
+const gtCandidate = computed(() => (agents.value || []).find(a => a.hgt_label === 1) || null)
 const finalRanking = ref(null)
 const accepted = ref(null)
 // Structured directives surfaced by the natural-language hint router. Each
