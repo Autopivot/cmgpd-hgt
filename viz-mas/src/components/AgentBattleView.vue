@@ -39,6 +39,11 @@
                 · com{{ husbandProfile.community_id ?? '?' }}
               </span>
               <span class="tiny muted" v-else>fetching profile…</span>
+              <button class="tiny linkbtn life-btn-target"
+                      title="open life-history popup for this husband"
+                      @click="openLifePopup({ id: husband.id, role: 'husband', profile: husbandProfile })">
+                🔍 life
+              </button>
             </div>
             <div class="cohort-info tiny muted">
               cohort {{ appState.year }} ({{ appState.ablation }}) ·
@@ -158,9 +163,16 @@
             @eliminate="eliminate($event)"
             @boost="boost($event, +0.5)"
             @penalise="boost($event, -0.5)"
+            @life="openLifePopup({ id: $event.id, role: 'candidate', profile: $event.profile })"
           />
         </div>
       </div>
+      <PersonLifePopup
+        :open="lifePopupPerson != null"
+        :person="lifePopupPerson"
+        :cohort-year="appState.year"
+        @close="lifePopupPerson = null"
+      />
 
       <!-- Final ranking footer -->
       <div v-if="finalRanking" class="row footer-row">
@@ -194,6 +206,7 @@ import {
 } from '../api/client.js'
 import bus from '../utils/eventbus.js'
 import CandidateCard from './CandidateCard.vue'
+import PersonLifePopup from './v5/PersonLifePopup.vue'
 
 // SEAL motif IDs (subset emitted by the persona frame). Keep in sync with
 // the exemplar table in client.js (`RULE_DEFAULTS.motifs`).
@@ -211,6 +224,15 @@ const appState = inject('appState')
 const REVEAL_GT_KEY = 'cmgpd-v5-reveal-gt'
 const revealGT = ref(localStorage.getItem(REVEAL_GT_KEY) === '1')
 watch(revealGT, v => { try { localStorage.setItem(REVEAL_GT_KEY, v ? '1' : '0') } catch {} })
+
+// V5 life-history popup target. Click 🔍 life on the husband row or any
+// candidate card to populate; PersonLifePopup auto-fetches narrative + LLM
+// paragraph and renders the income chart with a vertical cohort marker.
+const lifePopupPerson = ref(null)
+function openLifePopup(person) {
+  if (!person?.id) return
+  lifePopupPerson.value = person
+}
 
 // 1882-learned per-cell rule prior. V6 emits 'cell-rules-updated' whenever
 // the user picks a hex cell (transfer mode loads the saved profile; training

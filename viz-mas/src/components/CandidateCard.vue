@@ -73,6 +73,9 @@
               @click="$emit('boost', agent)">boost</button>
       <button class="tiny linkbtn"
               @click="$emit('penalise', agent)">penalise</button>
+      <button class="tiny linkbtn life-btn"
+              title="open life-history popup (events + income chart)"
+              @click="$emit('life', agent)">🔍 life</button>
       <button class="tiny linkbtn convo-toggle"
               @click="convoOpen = !convoOpen"
               :title="convoOpen ? 'collapse conversation' : 'expand conversation'">
@@ -111,7 +114,7 @@ const props = defineProps({
   revealGT: { type: Boolean, default: false },
 })
 
-defineEmits(['accept', 'eliminate', 'penalise', 'boost'])
+defineEmits(['accept', 'eliminate', 'penalise', 'boost', 'life'])
 
 const convoOpen = ref(false)
 const personaOpen = ref(false)

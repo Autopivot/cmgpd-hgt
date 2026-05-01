@@ -242,6 +242,25 @@ export async function getNarrative(person_id, year) {
   }
 }
 
+const _narrativeTextCache = new Map()
+export async function getNarrativeText(person_id, year, role = null) {
+  const k = `${person_id}|${year}|${role ?? ''}`
+  if (_narrativeTextCache.has(k)) return _narrativeTextCache.get(k)
+  try {
+    const params = { year }
+    if (role) params.role = role
+    const r = await http.get(
+      `/narrative-text/${encodeURIComponent(person_id)}`, { params },
+    )
+    _narrativeTextCache.set(k, r.data)
+    return r.data
+  } catch (e) {
+    const fb = { person_id, year, narrative: '', source: 'unavailable' }
+    _narrativeTextCache.set(k, fb)
+    return fb
+  }
+}
+
 /**
  * Cleaned-parquet profile for one person. Used by V4's click-popup and
  * by V5 to pre-fill the husband header before the negotiation streams.

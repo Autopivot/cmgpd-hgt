@@ -185,6 +185,8 @@ from .api.macro_endpoint import router as macro_router
 app.include_router(macro_router)
 from .api.cell_rules_endpoint import router as cell_rules_router  # noqa: E402
 app.include_router(cell_rules_router)
+from .api.narrative_text_endpoint import router as narrative_text_router  # noqa: E402
+app.include_router(narrative_text_router)
 
 
 # ── HTTP endpoints ────────────────────────────────────────────────────
