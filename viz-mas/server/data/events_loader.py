@@ -205,17 +205,67 @@ def _index_dataframe(df):
 
 
 def _compute_income_quantiles(df) -> tuple[float | None, float | None]:
-    """Global 33rd/66th percentiles of non-null ESTIMATED_INCOME."""
+    """Global 33rd/66th percentiles of non-null *positive* ESTIMATED_INCOME.
+
+    DS0003 income is ≈98% zero — the historical convention is to record
+    "no taxable income" as 0, not as missing. Including those zeros made
+    both quantiles collapse to 0.0 and `_income_level` degenerated to a
+    binary (every zero → 'low', every positive → 'high'), with 'mid'
+    impossible. We now compute the cut-points over positive incomes only;
+    zeros stay 'low' (their natural floor) and the positive distribution
+    is partitioned into mid + high in 33%/33% slices.
+    """
     if df is None or "ESTIMATED_INCOME" not in df.columns:
         return None, None
     series = df["ESTIMATED_INCOME"].dropna()
     if series.empty:
         return None, None
+    pos = series[series > 0]
+    if pos.empty:
+        return None, None
     try:
-        return float(series.quantile(_LOW_Q)), float(series.quantile(_HIGH_Q))
+        unique_pos = sorted(pos.unique())
+        if len(unique_pos) < 2:
+            v = float(unique_pos[0])
+            return v, v + 1e-6
+        # 33/66 quantiles fail catastrophically when the positive
+        # distribution is dominated by a single value (DS0003 has 73% of
+        # positives at 24.0). Fall back to median + 75th percentile so
+        # 'mid' = positive-up-to-median, 'high' = above.
+        low_cut = float(unique_pos[0])
+        if low_cut > 0:
+            low_cut = min(low_cut, float(pos.quantile(_LOW_Q)))
+        high_cut = float(pos.quantile(_HIGH_Q))
+        if high_cut <= low_cut:
+            high_cut = float(pos.quantile(0.85))
+        if high_cut <= low_cut:
+            high_cut = float(unique_pos[-1])
+        return low_cut, high_cut
     except Exception as exc:
         log.warning("Failed to compute DS0003 income quantiles (%s)", exc)
         return None, None
+
+
+def _income_level_for(value: float) -> str:
+    """Bucket ``value`` into 'low' (zero / very small), 'mid', 'high'.
+
+    Fallback when quantiles couldn't be computed: return 'low' for zero,
+    'mid' otherwise. Previously the no-quantile fallback returned 'mid'
+    unconditionally, which mislabelled every all-zero income trajectory
+    as 'mid' the moment ESTIMATED_INCOME column was empty or quantile
+    computation failed.
+    """
+    if value is None:
+        return "low"
+    if value <= 0:
+        return "low"
+    if _income_low is None or _income_high is None:
+        return "mid"
+    if value < _income_low:
+        return "low"
+    if value > _income_high:
+        return "high"
+    return "mid"
 
 
 def _ensure_loaded() -> None:
@@ -236,14 +286,13 @@ def _ensure_loaded() -> None:
 
 
 def _income_level(value: float) -> str:
-    """Bucket a single income value into 'low' | 'mid' | 'high'."""
-    if _income_low is None or _income_high is None:
-        return "mid"
-    if value <= _income_low:
-        return "low"
-    if value >= _income_high:
-        return "high"
-    return "mid"
+    """Bucket a single income value into 'low' | 'mid' | 'high'.
+
+    See `_compute_income_quantiles` for the cut-points (defined over
+    positive incomes only so zero rows stay 'low' rather than collapsing
+    every non-zero to 'high').
+    """
+    return _income_level_for(value)
 
 
 def _person_rows(person_id: str, start_year: int, end_year: int):
