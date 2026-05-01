@@ -97,8 +97,20 @@ async def _llm_paragraph(person_id, role, birth_year, cohort_year,
 
 @functools.lru_cache(maxsize=4096)
 def _cached_loader(person_id: str, year: int) -> dict:
-    """Cache the raw loader output; the LLM call is awaited per request."""
-    birth = get_birth_year(person_id)
+    """Cache the raw loader output; the LLM call is awaited per request.
+
+    Canonical birth-year policy: DS0001 BIRTHYEAR (admin) first, DS0003
+    birth-event year as fallback — same as `/api/narrative`, so every
+    surface in the UI shows the same birth year for the same person.
+    """
+    try:
+        from ..mas.profiles import get_profile as _get_profile
+        prof = _get_profile(person_id)
+        birth = prof.get("birth_year") if isinstance(prof, dict) else None
+    except Exception:
+        birth = None
+    if birth is None:
+        birth = get_birth_year(person_id)
     start = birth if birth is not None else year - 80
     events = load_events(person_id, start, year)
     income = load_income(person_id, start, year)

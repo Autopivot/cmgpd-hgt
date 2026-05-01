@@ -254,7 +254,14 @@ def api_narrative(person_id: str, year: int = Query(..., ge=1700, le=2000)):
     only normalises the person id and forwards `start`/`end` to it.
     Returns 404 when DS0003 has neither events nor income for this id.
     """
-    birth = get_birth_year(person_id)
+    # Canonical birth-year policy: DS0001 BIRTHYEAR (admin) first, DS0003
+    # birth-event year as fallback. Avoids the inconsistency where the V4
+    # profile popup and V5 husband chip read DS0001 while the V5 narrative
+    # row + income chart used to read DS0003 — for the same person.
+    profile = mas_get_profile(person_id)
+    birth = (profile.get("birth_year") if isinstance(profile, dict) else None)
+    if birth is None:
+        birth = get_birth_year(person_id)
     start = birth if birth is not None else year - 80
     events = load_events(person_id, start, year)
     income = load_income(person_id, start, year)
