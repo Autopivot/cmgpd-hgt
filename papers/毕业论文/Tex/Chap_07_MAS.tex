@@ -1,0 +1,70 @@
+\chapter{多智能体协商协议}\label{chap:mas}
+
+异构图变换器与子图链路预测共同给出的是以分数呈现的候选婚配对，单一分数难以替代历史学家的权衡式判断。本章描述将上述结构化证据"重演"为协商过程的多智能体协商协议，借鉴生成式智能体\citep{park2023generative} 与思维链\citep{wei2022cot}，并在多轮辩论\citep{liang2023llm} 与对话式评判\citep{chan2023chateval} 的交互结构上特化。鉴于 Turpin 等\citep{turpin2023faithfulness} 指出的事后合理化问题，本协议刻意限制智能体自由度：所有论据须挂载外部证据，每轮陈述与评分均完整记录以备审计。
+
+\section{角色实例化}\label{sec:mas-persona}
+
+对于队列年 \(t\) 中每个候选对 \((m,w)\)，协议实例化夫方与妻方两个智能体，由同一模板生成但承担互补的论辩立场。模板由六个字段构成。第一字段为人物档案，从 DS0001 读取姓名、生年、性别（按 CMGPD-LN 原始约定 1=女、2=男）、官职、八旗归属与户位编码，缺失时渲染为"档案未载"。第二字段为异构图变换器预分：第五章婚姻评分函数对候选对输出 logit \(\psi\)，按 \([0,10]\) 区间线性映射后注入，并附置信带以区分高置信与边界对。第三字段为生命事件块，从 DS0003 取出该年 EVENT\_1 与 EVENT\_2 代码并经 \texttt{event\_value\_labels.json} 翻译为可读短语；在册而无事件时渲染为"在册无事件记录"，与"档案未载"严格区分。第四字段为收入桶，基于 DS0001 收入百分位划分为低于 33 分位、33–66 分位、高于 66 分位三档。第五字段为子图模式标签，列出第六章 \(\mathcal{M}\) 中命中的母题集合 \(\mathcal{M}^\ast(m,w) \subseteq \mathcal{M}\)，每一命中以"可读名称（DRNL 标号摘要）"呈现。第六字段为提示，承载历史学家通过 console 累计注入的消息，按地址 tag 路由（详见 \cref{sec:mas-hint}）。
+
+\section{六轮协商流程}\label{sec:mas-rounds}
+
+整套协商组织为六轮：印象生成、深度询问、反驳、对齐、复述与终评，借鉴双方协商中"先建立印象、再追问差异、继而互相挑战、最后达成或保留分歧"的路径，并在轮间保留历史学家手动推进的钩子。\cref{alg:negotiation} 给出伪代码。
+
+\begin{algorithm}[t]
+\caption{六轮多智能体协商：候选集合 \(\mathcal{C}\) 在队列年 \(t\) 的协商流程。}\label{alg:negotiation}
+\begin{algorithmic}[1]
+\Require 候选集合 \(\mathcal{C}\)；提示队列 \(Q\)；推进事件 \(\mathcal{E}\)；最终得分超参 \(\lambda=0.30\)
+\Ensure 按降序排列的候选与最终得分对 \(\{(c, \mathrm{score}_i)\}\)
+\State \textbf{第 1 轮（印象生成）：}对 \(c \in \mathcal{C}\) 通过 \texttt{asyncio.gather} 并行实例化夫方与妻方智能体，输出履历段落与初评分 \(s_i^{(1)}, t_i^{(1)} \in [0,10]\)
+\For{第 \(r\) 轮 \(r \in \{2,3,4,5\}\)（依次对应深度询问、反驳、对齐、复述）}
+  \State 从 \(Q\) 取出本轮提示，按地址 tag \texttt{@everyone}、\texttt{@target}、\texttt{@c-XX} 路由
+  \State 将对方上一轮陈述与新提示注入两侧上下文
+  \State 两侧智能体输出更新陈述与评分 \(s_i^{(r)}, t_i^{(r)}\)
+  \State 调用 \(\mathcal{E}.\texttt{wait}()\) 等待历史学家在界面按下"下一轮"按钮
+\EndFor
+\State \textbf{第 6 轮（终评）：}对每一 \(c \in \mathcal{C}\)，按 \cref{eq:final-score} 计算 \(\mathrm{score}_i\)，并按降序输出到前端
+\State \Return \(\{(c, \mathrm{score}_i)\}_{c \in \mathcal{C}}\)
+\end{algorithmic}
+\end{algorithm}
+
+第 1 轮通过 \texttt{asyncio.gather} 并行实例化两端智能体；第 2 至 5 轮在每轮起始先排空提示队列，把命中的提示与对方上一轮陈述合并到上下文，再请求模型给出新陈述与评分。轮间的 \texttt{asyncio.Event} 使协商不会一气呵成连跑到底，历史学家可在每轮末端复核对话、再决定是否推进。第 6 轮不再生成自然语言，仅按 \cref{eq:final-score} 合成最终得分并输出排序，将语义生成与分数合成显式分离。
+
+\section{最终评分公式}\label{sec:mas-score}
+
+记夫方智能体在第 5 轮终态评分为 \(t_i \in [0,10]\)，妻方智能体的对位评分为 \(s_i \in [0,10]\)，候选对 \(i\) 的最终得分定义为
+\begin{equation}\label{eq:final-score}
+  \mathrm{score}_i = \frac{s_i + t_i}{2} - \lambda\,|s_i - t_i|, \quad \lambda = 0.30.
+\end{equation}
+前一项为均值，奖励双方一致高分；后一项以绝对差惩罚不对称同意。例如 \((9,9)\) 仍得 9，而 \((9,5)\) 降至 \(5.8\)，低于均值 7。\(\lambda=0.30\) 由形成性研究与历史学专家共同确定：取 0.5 以上则合理候选被压至 5 分以下失去区分度，取 0.1 以下则不对称同意几乎不被惩罚，与"双边匹配应彼此说服"的史学直觉相悖。
+
+\section{提示注入语法}\label{sec:mas-hint}
+
+历史学家在轮间可通过 console 注入提示。每条提示由一个地址 tag 与一个动词组成，前者决定作用域，后者决定智能体如何调整评分倾向。\cref{tab:hint-routing} 列出三类地址 tag 与四类动词的语义。
+
+\begin{table}[h]
+\centering
+\caption{提示路由与动词语义。}\label{tab:hint-routing}
+\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+地址 tag / 动词 & 作用域 & 对智能体推理的影响 \\
+\midrule
+\texttt{@everyone} & 当前队列年所有活跃智能体 & 提示广播到所有候选对的两侧角色 \\
+\texttt{@target} & 当前选中候选对的两侧智能体 & 提示仅路由到选中对的夫方与妻方 \\
+\texttt{@c-XX} & 编号为 XX 的候选对的两侧智能体 & 提示仅路由到该具体候选对 \\
+\midrule
+\texttt{boost} & 与上述任一作用域配合 & 指示智能体在下一轮提高对该候选的评分 \\
+\texttt{penalise} & 与上述任一作用域配合 & 指示智能体在下一轮降低对该候选的评分 \\
+\texttt{eliminate} & 与上述任一作用域配合 & 指示智能体将评分置 0 并在后续轮次不再为其辩护 \\
+\texttt{accept} & 与上述任一作用域配合 & 指示智能体将评分置 10 并在后续轮次强力支持 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+智能体收到提示后须在下一轮陈述中显式引用，既保证人为干预可被审计，也避免提示在长上下文中被悄然遗忘。
+
+\section{大语言模型端点与回退}\label{sec:mas-llm}
+
+协商所用语言模型为 Qwen-Plus（版本 \texttt{qwen-plus-2025-04-28}），通过 DashScope 提供的 OpenAI 兼容端点访问。系统读取环境变量 \texttt{DASHSCOPE\_API\_KEY} 作为鉴权凭证，请求头与请求体复用 OpenAI Chat Completions 协议。
+
+为使协议在缺乏 API 凭证的开发与教学场景下仍可演示，本研究设计了 stub 回退路径：当 \texttt{DASHSCOPE\_API\_KEY} 为空或调用失败时，系统切换到本地 stub，每轮返回固定占位陈述与一个由初评分加小幅扰动得到的分数，使前端的轮次推进、提示路由、最终评分公式与可视化均能照常运转。这一兜底使可视化不被外部 API 阻塞，对论文写作、课堂演示与离线评审尤为友好；stub 路径在前端以"模拟模式"显式标注，避免被误读为真实推理结果。
