@@ -135,5 +135,22 @@ class MatchState:
         self._accept_log.clear()
         self._accepted.clear()
 
+    def uncommit_match(self, husband_id: str) -> dict | None:
+        """Reverse a prior accept. Removes the per-husband latest record AND
+        every entry for this husband from the append-only log so the V1
+        learning-curve recomputes correctly. Returns the last record removed,
+        or None if there was nothing to undo.
+
+        Used by POST /api/negotiate/{husband_id}/restore for cumulative-error
+        recovery — the user can roll a bad accept back out of V2/V3/V4.
+        """
+        rec = self._accepted.pop(husband_id, None)
+        # Strip every log entry for this husband so the recall-at-1 curve
+        # doesn't keep counting an accept that has been rolled back.
+        self._accept_log = [
+            r for r in self._accept_log if r.get("husband_id") != husband_id
+        ]
+        return rec
+
 
 state = MatchState()

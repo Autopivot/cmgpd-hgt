@@ -94,22 +94,42 @@ def _hungarian_recall(scores: np.ndarray, men: list[int], women: list[int],
     return correct, total
 
 
-def _topk_recall(scores: np.ndarray, men: list[int], women: list[int],
-                 true_w_for_man: dict[int, int], k: int) -> tuple[int, int]:
-    correct = 0
-    total = 0
+def _ranking_metrics(scores: np.ndarray, men: list[int], women: list[int],
+                     true_w_for_man: dict[int, int],
+                     ks: tuple[int, ...] = (1, 5, 10)) -> dict:
+    """Compute top-k recall (k in `ks`) and MRR in a single argsort per man.
+
+    Returns {"hits@k": (correct, total), "mrr_sum": float, "mrr_total": int}.
+    MRR averages 1/rank where `rank` is the 1-indexed position of the true
+    wife in the man's score-descending list (defined only for pairs whose
+    true wife is in this cohort's candidate set).
+    """
+    woman_to_idx = {w: i for i, w in enumerate(women)}
+    hits = {k: [0, 0] for k in ks}
+    mrr_sum = 0.0
+    mrr_total = 0
     for r in range(scores.shape[0]):
         m = men[r]
         if m not in true_w_for_man:
             continue
         true_w = true_w_for_man[m]
-        if true_w not in women:
+        true_idx = woman_to_idx.get(true_w)
+        if true_idx is None:
             continue
-        topk = np.argsort(-scores[r])[:k]
-        if women.index(true_w) in topk.tolist():
-            correct += 1
-        total += 1
-    return correct, total
+        # 1 argsort per man, reused for every k AND for MRR.
+        order = np.argsort(-scores[r])
+        rank = int(np.where(order == true_idx)[0][0]) + 1     # 1-indexed
+        mrr_sum += 1.0 / rank
+        mrr_total += 1
+        for k in ks:
+            hits[k][1] += 1
+            if rank <= k:
+                hits[k][0] += 1
+    return {
+        **{f"hits@{k}": tuple(v) for k, v in hits.items()},
+        "mrr_sum": mrr_sum,
+        "mrr_total": mrr_total,
+    }
 
 
 def _evaluate_cohorts(
@@ -121,10 +141,10 @@ def _evaluate_cohorts(
     pair_labels = []
     h_correct = 0
     h_total = 0
-    top1_correct = 0
-    top1_total = 0
-    top5_correct = 0
-    top5_total = 0
+    hits_correct = {1: 0, 5: 0, 10: 0}
+    hits_total = {1: 0, 5: 0, 10: 0}
+    mrr_sum = 0.0
+    mrr_total = 0
     per_cohort = []
     # sample_negatives expects a stdlib random.Random (uses .sample / .choice
     # signatures from the stdlib API, not numpy). Threading a seeded rng
@@ -157,28 +177,33 @@ def _evaluate_cohorts(
         h_correct += h_c
         h_total += h_t
 
-        t1c, t1t = _topk_recall(scores, men, women, true_w_for_man, k=1)
-        top1_correct += t1c
-        top1_total += t1t
-        t5c, t5t = _topk_recall(scores, men, women, true_w_for_man, k=5)
-        top5_correct += t5c
-        top5_total += t5t
+        rk = _ranking_metrics(scores, men, women, true_w_for_man, ks=(1, 5, 10))
+        for k in (1, 5, 10):
+            c, n = rk[f"hits@{k}"]
+            hits_correct[k] += c
+            hits_total[k] += n
+        mrr_sum += rk["mrr_sum"]
+        mrr_total += rk["mrr_total"]
 
         per_cohort.append({
             "year": int(t),
             "n_men": len(men),
             "n_women": len(women),
             "hungarian_recall@1": h_c / h_t if h_t else 0.0,
-            "top1_recall": t1c / t1t if t1t else 0.0,
-            "top5_recall": t5c / t5t if t5t else 0.0,
+            "top1_recall": rk["hits@1"][0] / rk["hits@1"][1] if rk["hits@1"][1] else 0.0,
+            "top5_recall": rk["hits@5"][0] / rk["hits@5"][1] if rk["hits@5"][1] else 0.0,
+            "top10_recall": rk["hits@10"][0] / rk["hits@10"][1] if rk["hits@10"][1] else 0.0,
+            "mrr": rk["mrr_sum"] / rk["mrr_total"] if rk["mrr_total"] else 0.0,
         })
 
     metrics: dict = {
         "label": label,
         "n_pairs_scored": len(pair_scores),
         "hungarian_recall@1": h_correct / h_total if h_total else 0.0,
-        "top1_recall_unconstrained": top1_correct / top1_total if top1_total else 0.0,
-        "top5_recall_unconstrained": top5_correct / top5_total if top5_total else 0.0,
+        "top1_recall_unconstrained": hits_correct[1] / hits_total[1] if hits_total[1] else 0.0,
+        "top5_recall_unconstrained": hits_correct[5] / hits_total[5] if hits_total[5] else 0.0,
+        "top10_recall_unconstrained": hits_correct[10] / hits_total[10] if hits_total[10] else 0.0,
+        "mrr": mrr_sum / mrr_total if mrr_total else 0.0,
     }
     if pair_scores and len(set(pair_labels)) > 1:
         metrics["roc_auc"] = float(roc_auc_score(pair_labels, pair_scores))

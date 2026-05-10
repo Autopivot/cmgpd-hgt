@@ -9,7 +9,8 @@ PROFILE
 - role: {role}                       # "target" (husband) | "candidate" (wife)
 - sex: {sex}
 - birth year: {birth_year}
-- banner: {banner_id}
+- banner affiliation: {banner_label} (Qing Eight-Banner code {banner_id})
+- region: {region_label} (CMGPD-LN code {region_id})
 - community: {community_id}
 - household: {household_id}
 - HGT pre-score (vs target): {pre_score}

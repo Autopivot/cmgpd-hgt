@@ -166,7 +166,7 @@ export async function getPair({ year, ablation = 'ablated', id } = {}) {
  * 6-round bilateral negotiation frames:
  *   { type: 'round_start',      round: 1..6, label: 'persona'|'impressions'|'deep-dive'|'rebuttals'|'alignment'|'final' }
  *   { type: 'narrative',        person_id, birth_year?, events: [...], income: [...] }
- *   { type: 'persona',          person_id, resume: { headline, traits, values, red_flags } }
+ *   { type: 'persona',          person_id, resume: { headline, traits, values, red_flags }, motifs: [motif_id, ...] }
  *   { type: 'query',            from: 'target'|'c-XXX', to: 'c-XXX'|'target', text }
  *   { type: 'answer',           from: 'c-XXX'|'target', to: 'target'|'c-XXX', text }
  *   { type: 'round_scores',     round: N, pairs: [{ candidate_id, target_score, candidate_score, target_reason, candidate_reason }] }
@@ -236,6 +236,28 @@ export async function overrideMatch(husband_id, wife_id, score, note, year, abla
   const r = await http.post(`/negotiate/${encodeURIComponent(husband_id)}/override`, {
     wife_id, score, note, year, ablation,
   })
+  return r.data
+}
+
+/**
+ * V2 — full map of currently-accepted relations: { husband_id → record }.
+ * Each record has { husband_id, wife_id, score, source, year, ablation, ts }.
+ */
+export async function getAccepted() {
+  try {
+    const r = await http.get('/negotiate/accepted')
+    return r.data || {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * V2 restore — undo a prior accept so the (h, w) edge re-enters V3/V4 and
+ * V1's curve recomputes as if it never happened.
+ */
+export async function restoreMatch(husband_id) {
+  const r = await http.post(`/negotiate/${encodeURIComponent(husband_id)}/restore`)
   return r.data
 }
 

@@ -1,0 +1,219 @@
+\chapter{多智能体协商所用固定提示词}\label{chap:appendix-prompts}
+
+本附录列出第~\ref{chap:backend}~章 \S\ref{sec:backend-mas} 所述六轮多智能体协商在每一轮所用的四类固定提示词模板，以便读者复核论证逻辑、复现实验结果与开展二次开发。模板以英文撰写，原因是底座大语言模型对英文系统提示的稳定性更高；其中以花括号包裹的小写标识符（例如 \texttt{\{person\_id\}}、\texttt{\{events\_block\}}）为运行时占位符，由后端按当前候选对的实际档案、协商上下文、历史学家提示动态填充。完整对照可见后端服务层的提示词目录。
+
+下文按调用顺序给出四类模板（\S\ref{sec:appendix-persona}--\S\ref{sec:appendix-score}），以及第二至第五轮各自焦点问题的固定文本（\S\ref{sec:appendix-round-focus}）。所有模板按原始换行与缩进保留，未做语义改动。
+
+\section{角色简介模板（用于第一轮印象生成）}\label{sec:appendix-persona}
+
+第一轮"印象生成"阶段，系统对每一候选个体调用一次本模板，由大语言模型基于档案与生命事件输出一段角色简介；输出严格约束为 JSON 对象，便于后续轮次复用。
+
+\begingroup\footnotesize
+\begin{verbatim}
+You are constructing a persona resume for a real historical person from the
+Qing-dynasty Liaoning genealogy panel (CMGPD-LN, 1749-1909). Reason from the
+profile and life-history evidence; do NOT invent facts. Where evidence is
+absent, choose conservative inferences consistent with the macro context.
+
+PROFILE
+-------
+- person_id: {person_id}
+- role: {role}                       # "target" (husband) | "candidate" (wife)
+- sex: {sex}
+- birth year: {birth_year}
+- banner affiliation: {banner_label} (Qing Eight-Banner code {banner_id})
+- region: {region_label} (CMGPD-LN code {region_id})
+- community: {community_id}
+- household: {household_id}
+- HGT pre-score (vs target): {pre_score}
+
+LIFE EVENTS (DS0003)
+--------------------
+{events_block}
+
+ANNUAL INCOME (DS0003)
+----------------------
+{income_block}
+
+NEGOTIATION CONTEXT
+-------------------
+- cohort year: {year}
+- ablation: {ablation}
+
+{hint_block}
+
+TASK
+----
+Produce a JSON object with EXACTLY these keys:
+{
+  "headline":   "single short sentence (<= 90 chars) summarising who this person is",
+  "traits":     ["3-5 short adjectives or noun phrases grounded in the events / profile"],
+  "values":     ["3-5 short noun phrases describing what this person prioritises in a marriage"],
+  "red_flags":  ["1-3 short noun phrases describing weaknesses, frictions, or open questions"]
+}
+
+Respond with ONLY the JSON object, no surrounding prose.
+\end{verbatim}
+\endgroup
+
+\section{询问与初评分模板（用于第二至第五轮发问端）}\label{sec:appendix-query}
+
+第二至第五轮的发问端使用本模板。占位符 \texttt{\{round\_focus\}} 由 \S\ref{sec:appendix-round-focus} 给出的轮次焦点串填入，使每一轮的关注重心从印象、价值观、可信度切换至长期相容性。模板要求模型同时输出对每一候选的当前评分与一条针对其简介中风险点的精准提问。
+
+\begingroup\footnotesize
+\begin{verbatim}
+You are person {asker_id} ({asker_role}) in a Qing-dynasty marriage
+negotiation. You have just read the resumes of all candidates and you must:
+
+  1. Assign each candidate an INITIAL score (1-10) for marriage compatibility,
+     considering banner endogamy, age gap (husband 0-5y older is typical),
+     household alignment, and the values/red_flags in their resume.
+  2. For each candidate, draft ONE pointed question that probes the most
+     concerning red_flag in their resume.
+
+ROUND FOCUS: {round_focus}
+
+YOUR RESUME (your own self-image)
+---------------------------------
+{asker_resume}
+
+CANDIDATE RESUMES
+-----------------
+{candidate_block}
+
+{hint_block}
+
+TASK
+----
+Respond with a JSON object:
+{
+  "scores": [
+    {"candidate_id": "Pxxx", "score": int, "reason": "<= 200 chars"},
+    ...
+  ],
+  "queries": [
+    {"candidate_id": "Pxxx", "text": "<= 200 chars, one direct question"},
+    ...
+  ]
+}
+
+Use the EXACT candidate_id strings from the list above. Respond with ONLY the
+JSON object, no surrounding prose.
+\end{verbatim}
+\endgroup
+
+\section{答复模板（用于答复端）}\label{sec:appendix-answer}
+
+收到来自发问端的提问后，答复端按本模板生成一段角色化的回应，并对发问端给出反向评分。该反向评分被作为对称惩罚式最终评分（参见式~\eqref{eq:final-score}）的输入之一。
+
+\begingroup\footnotesize
+\begin{verbatim}
+You are person {answerer_id} ({answerer_role}) in a Qing-dynasty marriage
+negotiation. You have received a question from {asker_id}. Answer in
+character, grounded in your own resume, and then score the asker.
+
+ROUND FOCUS: {round_focus}
+
+YOUR RESUME
+-----------
+{answerer_resume}
+
+ASKER RESUME
+------------
+{asker_resume}
+
+QUESTION FROM {asker_id}
+------------------------
+{question_text}
+
+{hint_block}
+
+TASK
+----
+Respond with a JSON object:
+{
+  "answer":  "<= 240 chars, in-character reply addressing the question",
+  "score":   int (1-10) — your score for the asker as a marriage prospect,
+  "reason":  "<= 200 chars, why you scored the asker that way"
+}
+
+Respond with ONLY the JSON object, no surrounding prose.
+\end{verbatim}
+\endgroup
+
+\section{评分更新模板（用于每轮交换后的评分修订）}\label{sec:appendix-score}
+
+每一轮的提问—答复完成后，发问端再次调用本模板，依据当轮交换的全部内容更新对每一候选的评分。该轮末评分作为下一轮的初始评分输入，从而构成跨轮分数演化轨迹，便于在流程视图中以折线方式呈现给历史学家。
+
+\begingroup\footnotesize
+\begin{verbatim}
+You are person {scorer_id} ({scorer_role}). After exchanging a query and an
+answer with each candidate, update your score for each one (1-10).
+
+ROUND FOCUS: {round_focus}
+
+YOUR PRIOR SCORES (from the previous round)
+-------------------------------------------
+{prior_scores_block}
+
+EXCHANGES THIS ROUND
+--------------------
+{exchanges_block}
+
+{hint_block}
+
+TASK
+----
+Respond with a JSON object:
+{
+  "scores": [
+    {"candidate_id": "Pxxx", "score": int, "reason": "<= 200 chars"},
+    ...
+  ]
+}
+
+Use the EXACT candidate_id strings. Respond with ONLY the JSON object, no
+surrounding prose.
+\end{verbatim}
+\endgroup
+
+\section{各轮焦点固定文本}\label{sec:appendix-round-focus}
+
+第二至第五轮共享发问、答复与评分三类模板，但通过填入不同的轮次焦点串以驱动模型在每一轮关注的维度发生迁移。下表给出焦点串的一一对应：
+
+\begin{table}[!htbp]
+\centering
+\caption{各轮焦点串与轮次主题的对应关系。}
+\label{tab:appendix-round-focus}
+\footnotesize
+\begin{tabular}{c l p{0.62\linewidth}}
+\toprule
+轮次 & 主题 & 焦点串文本（填入 \texttt{\{round\_focus\}} 占位符） \\
+\midrule
+2 & 印象生成 & form initial impressions and question any obvious red flags \\
+3 & 深度询问 & probe values, household fit, and shared priorities \\
+4 & 反驳 & test honesty by following up on weaknesses or contradictions \\
+5 & 对齐 & evaluate long-term alignment and complementarity \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+第一轮（印象生成）只调用 \S\ref{sec:appendix-persona} 的角色简介模板，不需要焦点串；第六轮（终评）不再调用语言模型，仅按式~\eqref{eq:final-score} 的对称惩罚公式合成最终得分，亦不涉及焦点串。
+
+\section{提示注入块的填充语法}\label{sec:appendix-hint-block}
+
+四类模板末尾均含 \texttt{\{hint\_block\}} 占位符，由后端在每轮发起前从历史学家在协商竞技场视图（参见 \S\ref{sec:vis-E} 与表~\ref{tab:hint-routing}）中提交的指令队列中提取本轮命中的提示后填入。若本轮无任何命中，该占位符渲染为空字符串；若有命中，则按下列固定格式拼接：
+
+\begingroup\footnotesize
+\begin{verbatim}
+HISTORIAN HINTS (apply these strictly)
+--------------------------------------
+- @everyone be skeptical of stability claims
+- @c-3 boost: same banner, strong endogamous match
+- @target penalise: known instability event in 1881
+\end{verbatim}
+\endgroup
+
+每一行以"地址作用域 + 动词 + 自由文本"组成；地址作用域与动词的可选取值与语义见正文表~\ref{tab:hint-routing}。模型被显式要求"严格遵循"，但保留对其在角色简介与档案证据基础上的自洽性判断，从而避免提示完全替代论证逻辑。
+
+至此，多智能体协商所用全部固定提示词模板已悉数列出。结合第~\ref{chap:backend}~章 \S\ref{sec:backend-mas} 的角色实例化与六轮流程描述，本附录使读者得以在不进入后端服务源码的前提下完整复盘每一轮模型调用的输入构造方式。

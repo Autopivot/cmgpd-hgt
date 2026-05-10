@@ -464,6 +464,20 @@ async def api_accepted_all():
     return mas_state.all_accepted()
 
 
+@app.post("/api/negotiate/{husband_id}/restore")
+async def api_negotiate_restore(husband_id: str):
+    """Roll back a prior accept for this husband. Removes the record from
+    the per-husband latest map and the append-only log, so V1's curve and
+    V2's table recompute as if the accept never happened. The frontend
+    should also re-add the (h, w) edge to V3's scatter and V4's bipartite
+    on receipt of the `match-restored` bus event.
+    """
+    rec = mas_state.uncommit_match(husband_id)
+    if rec is None:
+        raise HTTPException(404, f"no accepted match for {husband_id}")
+    return {"status": "ok", "removed": rec}
+
+
 # ── V1 learning curve: MAS recall@1 trajectory vs HGT static baseline ─
 @app.get("/api/eval/progress")
 async def api_eval_progress(year: int, ablation: str = "ablated"):

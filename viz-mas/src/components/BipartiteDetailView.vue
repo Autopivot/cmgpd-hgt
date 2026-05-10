@@ -29,7 +29,20 @@
           <table v-else class="popup-table">
             <tr><td>sex</td><td>{{ popup.profile?.sex ?? '?' }}</td></tr>
             <tr><td>birth</td><td>{{ popup.profile?.birth_year ?? '?' }}</td></tr>
-            <tr><td>banner</td><td>{{ popup.profile?.banner_id ?? '?' }}</td></tr>
+            <tr>
+              <td>banner</td>
+              <td>
+                <template v-if="popup.profile?.banner_label">
+                  {{ popup.profile.banner_label }}
+                  <span class="muted">({{ popup.profile.banner_id }})</span>
+                </template>
+                <template v-else>—</template>
+              </td>
+            </tr>
+            <tr>
+              <td>region</td>
+              <td>{{ popup.profile?.region_label ?? '—' }}</td>
+            </tr>
             <tr><td>community</td><td>{{ popup.profile?.community_id ?? '?' }}</td></tr>
             <tr><td>household</td><td>{{ popup.profile?.household_id ?? '?' }}</td></tr>
           </table>

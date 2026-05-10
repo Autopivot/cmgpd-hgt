@@ -501,6 +501,13 @@ function onAccepted(evt) {
   draw()
 }
 
+// Re-show the (h, w) dot when an accept is rolled back upstream.
+function onRestored(evt) {
+  if (!evt || evt.husband_id == null || evt.wife_id == null) return
+  acceptedSet.value.delete(`${evt.husband_id}|${evt.wife_id}`)
+  draw()
+}
+
 function onExternalClear() {
   if (selected.value) {
     selected.value = null
@@ -512,6 +519,7 @@ onMounted(() => {
   load()
   window.addEventListener('resize', resizeHandler)
   bus.on('match-accepted', onAccepted)
+  bus.on('match-restored', onRestored)
   bus.on('hex-clear', onExternalClear)
   if (svgRef.value) {
     svgRef.value.addEventListener('cell-clicked', onCanonicalCellClick)
@@ -521,6 +529,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('resize', resizeHandler)
   bus.off('match-accepted', onAccepted)
+  bus.off('match-restored', onRestored)
   bus.off('hex-clear', onExternalClear)
   if (svgRef.value) {
     svgRef.value.removeEventListener('cell-clicked', onCanonicalCellClick)

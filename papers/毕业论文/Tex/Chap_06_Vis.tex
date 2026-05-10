@@ -1,0 +1,84 @@
+\chapter{可视分析系统设计}\label{chap:vis}
+
+本章把前几章的异构图变换器编码器、SEAL 子图模式与多智能体协商协议拼装为面向史学家的可视分析系统。设计目标延续第三章 DG1--DG6，支持混合主动\citep{green2009mixedinitiative}意义下的"系统建议---专家审议"双向通道，并以来源标记与一键回滚兜底任何被加入家谱的边\citep{sacha2014knowledge}。
+
+\section{六联动视图概览}\label{sec:vis-views}
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width=\linewidth]{system}
+    \caption{GeneaLink 的六联动视图布局。\textit{(A)} 性能概览跟踪队列层级进度；\textit{(B)} 流程视图以来源标记与一键回滚维护提交账本；\textit{(C)} 嵌入视图以稳定的蜂窝画布组织候选；\textit{(D)} 二分图视图支持单对审视与批量接受；\textit{(E)} 多智能体协商竞技场可视化六轮辩论并支持提示注入；\textit{(F)} 规则视图允许专家整定权重并跨队列迁移先验。}
+    \label{fig:system}
+\end{figure}
+
+界面采用三行两列布局，系统六视图协同布局如图~\ref{fig:system}所示。表~\ref{tab:six-views}归纳了视图编号、名称、主要交互动作及其对应的设计目标。
+
+\begin{table}[!htbp]
+    \centering
+    \small
+    \caption{六联动视图与设计目标对照}\label{tab:six-views}
+    \begin{tabular}{c l p{0.42\linewidth} c}
+        \toprule
+        编号 & 视图名称 & 主要交互 & 设计目标 \\
+        \midrule
+        A & 性能概览 & 切换队列年；曲线悬停显示精确召回值 & DG1 \\
+        B & 流程视图 & 行点击交叉高亮；一键回滚已提交边 & DG5 \\
+        C & 嵌入视图（蜂窝画布） & 单击载入候选；shift-click 批量提交 & DG3 \\
+        D & 二分图视图 & 节点点击载入档案；阈值滑块批量接受 & DG2 \\
+        E & 多智能体协商竞技场 & 注入提示；逐轮推进或一键自动协商 & DG4 \\
+        F & 规则视图 & 滑动权重；勾选图样；保存到单元格 & DG6 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{性能概览（A）}\label{sec:vis-A}
+
+监督模式下，纵轴叠绘红色实线（多智能体协商在累计接受边上的 recall@1）与绿色虚线（异构图变换器单独运行的基线，约为 $0.605$），两者差距即协商带来的边际增益，悬停可读出精确数值。部署模式下真值缺失，纵轴自动切换为完成度（已接受边数除以候选丈夫总数，上限 $1$）。视图监听 \texttt{cohort:select}，在切换队列年时同步重绘曲线。
+
+\section{流程视图（B）}\label{sec:vis-B}
+
+流程视图以表格承担"已提交边账本"的角色。字段含丈夫与妻子标识符、复合得分、得分差，监督模式下另显示 Hungarian 配对正确性指示符。每行末尾的来源标记为：鼠尾草绿表示该边由异构图变换器批量提交，琥珀色表示经由协商竞技场接受，两个色块同时出现说明两条路径达成一致。每行均挂载一键回滚按钮，触发后广播 \texttt{pair:restore} 并写入审计轨迹，以满足 DG5。点击行将广播 \texttt{pair:hover}，使其他视图同步高亮。
+
+\section{嵌入视图（蜂窝画布，C）}\label{sec:vis-C}
+
+候选对的交互向量取自婚姻评分头第一层线性层之前的拼接，即
+\[
+    z_{m,w} = W_1\bigl[h_m\,\|\,h_w\,\|\,|h_m-h_w|\,\|\,h_m\odot h_w\bigr]\in\mathbb{R}^{128}.
+\]
+坐标生成分四步：（i）对全队列的 $\{z_{m,w}\}$ 作主成分分析降至 $\mathbb{R}^{20}$；（ii）逐对计算余弦不相似度形成矩阵 $D$；（iii）对 $D$ 施以度量型多维标度法（Multi-Dimensional Scaling，MDS）嵌入到 $\mathbb{R}^2$；（iv）按每维 2\%--98\% 分位线性归一到 $[0,1]^2$。画布在归一化平面上铺设平顶六边形栅格，外接半径 $R=0.04$，轴向坐标 $(q,r)$ 处单元中心为 $c_x=R\cdot\tfrac{3}{2}q,\ c_y=R\sqrt{3}(r+\tfrac{q}{2})$。算法~\ref{alg:packer}按内向吸引策略把候选装填入栅格。
+
+\begin{algorithm}[!htbp]
+    \small
+    \caption{蜂窝画布内向吸引装填}\label{alg:packer}
+    \begin{algorithmic}[1]
+        \Require 候选集合 $\mathcal{C}$ 及其归一化坐标 $\{(x,y)\}$；六边形栅格 $\mathcal{H}$；单元容量 $C=12$
+        \Ensure 候选到栅格的指派 $\sigma:\mathcal{C}\to\mathcal{H}$
+        \State 计算质心 $\bar{z}$，按到 $\bar{z}$ 距离对 $\mathcal{C}$ 升序排序
+        \For{每个候选对 $(m,w)\in\mathcal{C}$ 按上述顺序}
+            \State $h^*\leftarrow\arg\min_{h\in\mathcal{H},\,|\sigma^{-1}(h)|<C}\|p(h)-(x,y)\|$
+            \State 若 $h^*$ 仍有容量则直接接受
+            \State \textbf{半减循环}（至多 50 次）：朝 $\bar{z}$ 步长减半逼近，重求最近未满栅格
+            \State \textbf{阿基米德螺旋}（至多 200 次）：以 $\Delta\theta=0.1$ 旋出，遇首个未满栅格即接受
+            \State \textbf{线性扫描兜底}：按距离升序遍历 $\mathcal{H}$，接受首个未满栅格
+        \EndFor
+        \State \Return $\sigma$
+    \end{algorithmic}
+\end{algorithm}
+
+视觉渲染分四层叠加：（1）单元底色——监督模式按平均得分差使用陶土--米白--鼠尾草发散色阶（绿色为正、红色为负），部署模式改用米色到蓝色顺序色阶编码异构图变换器置信度；（2）平均得分差超过队列均值 $2\sigma$ 的单元叠加 $45^{\circ}$ 对角斜纹；（3）被同一 SEAL 图样标记的单元共享轮廓色；（4）单元内候选绘成小圆点，半径正比于得分。单击单元触发 \texttt{pair:hover} 并把顶名候选载入二分图视图；shift 单击则对单元内所有超过阈值 $\theta=0.5$（映射后 logit）的候选广播 \texttt{pair:commit}，构成 DG3 所要求的批量审议入口。
+
+\section{二分图视图（D）}\label{sec:vis-D}
+
+二分图视图把选中单元的候选拉直为左侧丈夫列与右侧妻子列，贝塞尔曲线粗细与颜色共同编码 logit。点击节点弹出生平卡片，调用后端接口返回事件清单。顶部阈值滑块支持批量接受；在 1882 队列与 $\theta=1.0$ 设置下，VIS Short 论文注释段记录到批量提交的精度约为 $7$ 中 $8$。接受动作触发 \texttt{pair:commit}，向流程视图写入带异构图变换器来源标记的行，并令蜂窝画布对应单元降为 $30\%$ 透明度以抹除已决策的对。
+
+\section{协商竞技场（E）}\label{sec:vis-E}
+
+协商竞技场把多智能体推理过程显式外化\citep{amershi2014modeltracker,fails2003interactiveml}。左侧为候选丈夫生平时间轴，按事件代码绘制；中部纵向排列候选卡，卡片下方六个圆形得分点位随六轮协商依次填色；右侧为提示控制台，史学家自由文本经地址标签与动词解析后写入提示队列，队列深度以徽章实时显示。接受候选触发 \texttt{pair:commit}，向流程视图写入带多智能体协商来源标记的行，直接服务于 DG4。
+
+\section{规则视图（F）}\label{sec:vis-F}
+
+规则视图自上而下分三层：最上层为粮价 $z$ 分数与灾害频次共用的双轴折线；中层含 $4$ 条范围 $[0,2]$ 的权重滑块（父系、同胞、家户、八旗）和 $8$ 个 SEAL 图样勾选框，监督模式下史学家点击"保存到单元格"即把状态聚合为单元格层级先验，触发蜂窝画布上对应单元出现金色圆点；部署模式下整片控件转为只读，自动从 1882 年先验装载并注入协商首轮提示；最下层为微结构图样面板，配合矩阵浏览器式的局部邻接展示\citep{henry2006matrixexplorer,mcguffin2005genealogy}支持专家即刻核证。规则视图是跨队列规则迁移的核心：系统在此沉淀的不是具体边，而是空间区域中的史学规则。
+
+\section{事件总线}\label{sec:vis-bus}
+
+六视图通过统一的事件总线协作，定义四类跨视图事件：\texttt{cohort:select}、\texttt{pair:hover}、\texttt{pair:commit}、\texttt{pair:restore}。所有视图被强制要求在一次浏览器动画帧（约 $16\,\mathrm{ms}$）内完成响应，使界面交互的视觉同步性成为可被依赖的设计契约\citep{endert2017state}。

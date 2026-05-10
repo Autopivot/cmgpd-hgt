@@ -37,7 +37,7 @@ _NEW_ROOT = Path(__file__).resolve().parents[3]
 RDA_PATH = _NEW_ROOT / "data" / "raw" / "DS0003" / "27063-0003-Data.rda"
 LABELS_PATH = _NEW_ROOT / "data" / "raw" / "DS0003" / "event_value_labels.json"
 CSV_CACHE_PATH = _NEW_ROOT / "data" / "processed" / "ds0003" / "ds0003_raw_from_r.csv.gz"
-PARQUET_CACHE_PATH = _NEW_ROOT / "data" / "processed" / "ds0003" / "ds0003_clean.parquet"
+PARQUET_CACHE_PATH = _NEW_ROOT / "data" / "processed" / "ds0003" / "ds0003_joined.parquet"
 R_EXPORT_SCRIPT_PATH = _NEW_ROOT / "scripts" / "export_ds0003_rda.R"
 R_EXECUTABLE = os.environ.get("R_EXECUTABLE") or shutil.which("Rscript")
 

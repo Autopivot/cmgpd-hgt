@@ -1,0 +1,566 @@
+% =====================================================================
+% [SYSTEM] — IEEE VIS Short Paper
+% Visual Analytics for Reconstructing Marriage Edges in Patrilineal
+% Genealogies via Coupled GNN Link Prediction and LLM Multi-Agent
+% Negotiation
+%
+% Built against the IEEE VGTC class shipped with this directory.
+% Compile with `make` (see the directory's makefile).
+%
+% NOTE: every \cite{KEY} below is a PLACEHOLDER. Verify against
+% Semantic Scholar / CrossRef before submission. See paper.bib.
+%
+% PLACEHOLDER FIGURES: this file references figures/teaser.pdf and
+% figures/system_overview.pdf which do not yet exist. The makefile
+% will fall back to figures/CypressView (already in this directory)
+% if you uncomment the alternate \includegraphics line.
+% =====================================================================
+\documentclass[review]{vgtc}                  % review mode (watermark)
+%\documentclass{vgtc}                          % final
+%\documentclass[preprint]{vgtc}                % preprint
+
+\graphicspath{{figures/}{pictures/}{images/}{./}}
+
+\usepackage{times}
+\renewcommand*\ttdefault{txtt}
+\usepackage{booktabs}
+\usepackage{mathptmx}
+\usepackage{amsmath, amssymb}
+\usepackage{algorithm, algpseudocode}
+\usepackage[utf8]{inputenc}
+\usepackage{xeCJK}                             % so 母家 / 家谱 typeset cleanly
+\setCJKmainfont{SimSun}                        % adjust to a font on your system
+\usepackage{xspace}
+
+\onlineid{0}
+\vgtccategory{Research}
+\vgtcinsertpkg
+
+\newcommand{\system}{\textsc{[System]}\xspace}
+
+% =====================================================================
+\title{\system: Visual Analytics for Reconstructing Marriage Edges in
+Patrilineal Genealogies via Coupled GNN Link Prediction and LLM
+Multi-Agent Negotiation}
+
+\author{Anonymous Author(s)\thanks{e-mail: anon@anon.invalid}\\
+        \scriptsize Anonymous Affiliation}
+
+\teaser{
+  \centering
+  \includegraphics[width=\linewidth]{CypressView}     % TODO: replace with figures/teaser.pdf — system overview screenshot
+  \caption{\system\ at a glance. Six linked views (V1--V6) cooperate
+  through a shared event bus. V3's honeycomb cohort canvas drives
+  selection; V4 unfolds the bipartite husband--wife candidates; V5
+  hosts the six-round LLM-agent negotiation; V2 records every commit
+  with a multi-label provenance tag (\textsf{HGT}, \textsf{MAS}, or
+  both); V1 tracks the running MAS recall@1 against the static HGT
+  baseline; V6 lets the analyst tune motif toggles and the gap-penalty
+  $\lambda$. Every commit is one-click reversible. \textbf{[Replace
+  this placeholder image with a real system screenshot.]}}
+  \label{fig:teaser}
+}
+
+\abstract{%
+Imperial-era Chinese family genealogies (\emph{jiapu},
+\begin{CJK*}{UTF8}{gbsn}家谱\end{CJK*}) preserve detailed records of
+male descent yet systematically erase women: a wife's identity rarely
+exceeds her surname, and a daughter's record terminates at her natal
+lineage. The structural absence of marriage edges in jiapu obscures
+the maternal kinship network --- the \emph{muxia}
+(\begin{CJK*}{UTF8}{gbsn}母家\end{CJK*}, ``mother's house'') --- whose
+role in late-imperial politics is well documented but quantitatively
+under-studied. We introduce \system, a visual analytics workspace
+that treats genealogical completion as an \emph{interpretable
+link-prediction} task in which a heterogeneous graph transformer (HGT)
+proposes candidate marriages and an LLM-driven multi-agent negotiation
+re-litigates each proposal under historian-injectable constraints.
+Because no jiapu corpus carries its own ground truth, we use the
+CMGPD-LN demographic panel --- a separate Qing resource compiled from
+triennial Banner population registers in Liaoning, which preserves
+marriage and maternal edges that jiapu suppress --- as an evaluation
+testbed: we ablate its $r_{hw}$ and $r_{md}/r_{ms}$ edges to simulate
+the jiapu-style record gap, then grade reconstruction against the
+held-out edges. On 131{,}140 held-out test pairs the HGT layer alone reaches
+Hit@10 $= 0.624$ and MRR $= 0.428$ (ROC-AUC $= 0.99$),
+yet unconstrained Hit@1 stays at $0.325$ --- well below a historian's
+commit threshold even though per-cohort Hungarian assignment recovers
+$62.6\%$ of marriages; \system\ closes the residual gap by routing
+low-confidence cases through a six-round bilateral persona-grounded
+negotiation, with the V4-batch operator-acceptance precision
+calibrated to $\approx 0.87$ on the 1882 cohort (Hit@10 $= 0.841$,
+MRR $= 0.633$ there), while preserving an audit trail that aligns
+each commit with one or more SEAL motifs and (when available) sparse
+archival hints. Three case studies demonstrate that \system\ converts
+an opaque GNN ranking into a deliberative workflow whose every
+accepted edge is justified by either a pattern in the graph, a story
+in the agents' transcript, or both.
+} % end of abstract
+
+\keywords{Visual analytics, link prediction, heterogeneous graph
+neural networks, large language models, multi-agent simulation,
+historical archives, human-in-the-loop, kinship reconstruction.}
+
+% =====================================================================
+\begin{document}
+
+\firstsection{Introduction}
+\maketitle
+
+Imperial-era Chinese family genealogies --- \emph{jiapu}
+(\begin{CJK*}{UTF8}{gbsn}家谱\end{CJK*}) --- are the largest surviving
+record of late-imperial kinship, but they are systematically lopsided:
+patrilineal convention documents male descendants in detail while
+reducing wives and daughters to a surname character or omitting them
+outright. Edges between marriage partners ($r_{hw}$) and from a child
+to their mother ($r_{md}, r_{ms}$) are therefore either absent,
+surnames-only, or coarsely imputed across the jiapu corpus --- precisely
+the substrate one would need to reconstruct the \emph{maternal kinship
+network} that historians have long argued mediated political coalitions,
+household labour allocation, and the flow of marriage-market resources
+across banners~\cite{wang2007muxia, mann2002precious}.
+The methodological gap this paper addresses is how to fill those
+missing edges in a way a historian can defend, given that no jiapu
+corpus carries its own ground truth.
+
+Our solution is to use a \emph{separate} Qing-era resource --- the
+China Multi-Generational Panel Dataset, Liaoning (CMGPD-LN,
+1749--1909~\cite{cmgpd-ln-2010}), a demographic panel compiled from
+triennial population registers maintained by the Banner administration
+in Liaoning --- as an evaluation testbed. Unlike jiapu, CMGPD-LN
+preserves the marriage and maternal edges. We \emph{simulate} the
+jiapu completion task: ablate $r_{hw}$ and $r_{md}/r_{ms}$ from
+CMGPD-LN to mimic the jiapu record gap, train on the ablated graph,
+and grade reconstructions against the held-out edges that the panel
+--- but no real jiapu --- preserves. The deployment target is real
+jiapu; CMGPD-LN provides the methodology validation that jiapu
+themselves cannot.
+
+A heterogeneous graph transformer~\cite{hu2020hgt} together with a
+SEAL-based subgraph-pattern matcher~\cite{zhang2018seal} provides a
+strong distributional baseline. Two limitations motivate \system.
+\emph{First}, even a well-tuned HGT exhibits a familiar
+ranking-vs-decision gap: across 131k held-out pairs the true wife
+appears within the top-10 in $62.4\%$ of cases
+(Hit@10 $= 0.624$, MRR $= 0.428$) and the model is well-calibrated
+(ROC-AUC $= 0.99$, PR-AUC $= 0.95$); per-cohort Hungarian assignment
+recovers $62.6\%$ of marriages; yet \emph{unconstrained} Hit@1 stays
+at $32.5\%$, well below a historian's commit threshold. An ablation
+study reveals that maternal edges contribute $\approx\!0$ marginal
+predictability above marriage edges
+($\Delta$~Hungarian recall@1 $= -0.047$ vs.\ the unablated upper
+bound), confirming the residual error is not absorbed by the graph
+alone. \emph{Second}, the model is opaque; a probability
+score offers no narrative purchase, and no surface for injecting the
+\emph{partial} archival evidence (a surviving surname, a banner
+constraint, an in-marriage event) that genealogists working with real
+jiapu routinely have but cannot encode in a feature vector.
+
+\system\ is our answer to both gaps. It is a six-panel visual
+analytics workspace (\cref{fig:teaser}) built on top of the HGT+SEAL
+backbone, designed around a single premise: \emph{a marriage edge
+worth committing to a reconstructed jiapu must be defensible by either
+a graph pattern, a deliberative narrative, or both, and never by a
+black-box score alone}. \system\ couples the GNN ranking with an LLM
+multi-agent negotiation in which each marriage-age individual on the
+testbed is enrolled as an autonomous persona grounded in their CMGPD
+life-event and income trajectory; a six-round one-to-many bilateral
+protocol re-prices the HGT shortlist under round-by-round expert
+hints; and an audit log preserves every commit with a multi-label
+provenance tag (\textsf{HGT}, \textsf{MAS}, or both).
+
+\noindent\textbf{Contributions.}
+\textbf{(i)}~A visual analytics workspace pairing a per-cohort
+honeycomb embedding view with an LLM negotiation arena, bridging GNN
+link prediction on the CMGPD-LN testbed and historian-in-the-loop
+reasoning, with the deployment target being real jiapu.
+\textbf{(ii)}~An ablation-mirrored evaluation harness that simulates
+the jiapu record gap directly on the demographic panel by removing
+every $r_{hw}$ and $r_{md}/r_{ms}$ edge prior to training --- a
+benchmark no jiapu corpus can supply on its own.
+\textbf{(iii)}~A six-round bilateral negotiation protocol whose final
+ranking obeys $\mathrm{score}_i = \tfrac12 (s_i + t_i)
+- \lambda\,|s_i - t_i|$, with hint injection drained between rounds.
+\textbf{(iv)}~A multi-label provenance scheme on every committed edge
+that distinguishes HGT-batch acceptances from MAS-overrides and flags
+the convergent case, supporting cumulative-error diagnosis through
+one-click restore.
+
+% =====================================================================
+\section{Related Work}
+\label{sec:related}
+
+\textbf{VA for relational and historical archives.}
+Network-completion visualisations for biographical data have long
+combined edge-uncertainty cues with mixed-initiative
+exploration~\cite{vis-prosopography};
+recent work treats link prediction as the analytic primitive and
+examines analyst response to model
+confidence~\cite{vis-link-prediction-confidence}. We extend this
+tradition by committing explicitly to GNN-based ranking as the surface
+from which exploration begins, and by treating an LLM agent transcript
+as a first-class evidence layer rather than as an external explanation.
+\textbf{Heterogeneous graph learning.} HGT~\cite{hu2020hgt} extends
+attention across typed relations; SEAL~\cite{zhang2018seal} exposes
+the local structural pattern motivating a prediction. We use both as
+backbone and treat their outputs as priors for an LLM agent population.
+\textbf{LLM agents and negotiation.}
+Generative agents have framed LLMs as deliberative
+units~\cite{park2023generative}, and negotiation protocols expose
+persona-grounded reasoning~\cite{abdelnabi2023negotiation}; we
+specialise this line by seeding agents with DS0003 life-history
+evidence and SEAL motif tags. \textbf{Mixed-initiative
+systems}~\cite{endert2014mixed} ground our hint console: the
+\texttt{@everyone}, \texttt{@target}, and \texttt{@c-XX} addresses are
+drained between rounds so historians can inject brittle archival
+evidence without breaking the agent loop.
+
+% =====================================================================
+\section{Domain Background and Task Abstraction}
+\label{sec:domain}
+
+\textbf{The target gap (jiapu).} In jiapu the patriline is the unit of
+record: each male descendant is a generation entry in the lineage
+book, while a female descendant typically appears at most as a
+surname on her father's entry, and is often omitted entirely upon
+marriage. The \emph{muxia} ---
+\begin{CJK*}{UTF8}{gbsn}母家\end{CJK*}, the maternal household to which
+a wife traces her natal lineage --- is therefore structurally invisible
+in the source. Reconstructing it from jiapu alone is impossible
+because the very edges we wish to recover are the ones the source
+omits.
+
+\textbf{The empirical handle (CMGPD-LN).} We instead use CMGPD-LN
+(ICPSR 27063) as a testbed. CMGPD-LN is a Qing demographic and
+administrative panel compiled from the triennial population registers
+maintained by the Banner administration in Liaoning between 1749 and
+1909~\cite{cmgpd-ln-2010}; \emph{unlike} jiapu it preserves the
+$r_{hw}$ and $r_{md}/r_{ms}$ edges along with individual life-history
+records (DS0003 events + estimated income). We exploit this asymmetry
+methodologically: ablate $r_{hw}, r_{md}, r_{ms}$ from CMGPD-LN,
+train the reconstruction system on the ablated graph, and grade
+against the panel's held-out ground truth.
+
+\textbf{Tasks.} Formative interviews with three domain experts (E1,
+demographic historian; E2, computational genealogist; E3, digital-
+humanities methodologist) yielded:
+\textbf{T1} identify high-confidence candidates within a cohort year,
+with awareness of the kinship motifs underpinning each;
+\textbf{T2} adjudicate uncertain candidates by injecting partial
+archival evidence and inspecting the agents' reasoning; and
+\textbf{T3} audit the cumulative reconstruction with a per-edge
+provenance trail and reversal mechanism.
+These distil into six design goals --- \textbf{DG1 cohort-as-canvas,
+DG2 provenance-by-construction, DG3 narrative grounding, DG4
+steerable deliberation, DG5 reversibility, DG6 tight coupling} ---
+which govern every view in \system.
+
+% =====================================================================
+\section{Computational Backbone}
+\label{sec:backbone}
+
+\textbf{Graph schema and ablation.} Let
+$G = (V, E, \mathcal{T}, \mathcal{R})$ denote the heterogeneous
+graph induced by CMGPD-LN with node types
+$\mathcal{T} = \{\textsf{person}, \textsf{household},
+\textsf{community}, \textsf{banner}\}$ and nine edge types
+$\mathcal{R}$ including patrilineal kinship ($r_{fs}, r_{fd}$),
+matrilineal kinship ($r_{ms}, r_{md}$), co-residence
+($r_{hh}, r_{hc}, r_{cb}$), and timed marriage edges $r_{hw}$
+carrying $\textsf{edge\_time} = y$. The \emph{jiapu-mirroring
+ablation} replaces, for $r \in \{r_{hw}, r_{ms}, r_{md}\}$, the edge
+index tensor with an empty $2 \times 0$ tensor while preserving the
+relation type in $G.\mathrm{metadata}()$ --- an ``ablate, don't delete''
+invariant required because per-relation projections are registered on
+the metadata snapshot.
+
+\textbf{HGT encoder.} Each layer
+updates $h_v^{(\ell+1)}$ by attention over typed neighbours
+$(u, r) \in \mathcal{N}(v)$:
+\begin{equation}
+\alpha_{u,v}^{r} = \mathrm{softmax}_u\!\left(
+  \tfrac{(W^{q}_{\tau(v)} h_v^{(\ell)})^{\!\top}
+         W^{r}_{\mathrm{att}}
+         (W^{k}_{\tau(u)} h_u^{(\ell)})}{\sqrt{d}}
+  \cdot \mu_{\tau(u),r,\tau(v)}\right)
+\end{equation}
+\begin{equation}
+h_v^{(\ell+1)} = \mathrm{LN}\!\Bigl(
+  h_v^{(\ell)} + \!\sum_{r,u} \alpha_{u,v}^{r}\,
+    W^{r}_{\mathrm{msg}}\,W^{v}_{\tau(u)} h_u^{(\ell)}\Bigr)
+\end{equation}
+where $\tau(\cdot)$ returns node type and $\mu$ is a learned
+relation-prior tensor. After two layers a marriage scorer
+$\psi(h_m, h_w) = \mathrm{MLP}([h_m, h_w, |h_m - h_w|, h_m \odot h_w])$
+emits a logit for every candidate pair; negatives are sampled
+within-cohort to prevent cross-year shortcuts.
+
+\textbf{SEAL motifs.} For each candidate $(m, w)$ we extract the
+$k$-hop enclosing subgraph $\mathcal{N}_k(m, w)$ and apply
+Double-Radius Node Labelling (DRNL) to produce a structural
+fingerprint~\cite{zhang2018seal}. We pre-define four canonical
+motifs of historical interest: $\mathsf{m}_1$ \emph{father-brother},
+$\mathsf{m}_2$ \emph{uncle-in-law}, $\mathsf{m}_3$
+\emph{same-household}, $\mathsf{m}_4$ \emph{banner-endogamy}; a
+candidate matches $\mathsf{m}_k$ when its DRNL signature is consistent
+with the exemplar's labelled subgraph. The matched motif set is
+surfaced verbatim in the agent's persona prompt (\cref{sec:mas}).
+
+\textbf{Bilateral final score.} Given a husband-side score
+$t_i \in [0, 10]$ and a wife-side counter-score $s_i \in [0, 10]$
+at the close of round 5, the round-6 ranking obeys
+\begin{equation}
+\mathrm{score}_i = \tfrac{1}{2} (s_i + t_i)
+  - \lambda\,|s_i - t_i|, \qquad \lambda = 0.3.
+\label{eq:final}
+\end{equation}
+This rewards mutual-high configurations while penalising asymmetric
+agreements; $\lambda$ is exposed in V6.
+
+% =====================================================================
+\section{\system: Visual Analytics Design}
+\label{sec:design}
+
+\system\ is a 3-column $\times$ 2-row grid of six linked views, backed
+by a FastAPI server with WebSocket fan-out for the agent stream
+(\cref{fig:teaser}). The frontend (Vue 3 + Vite) holds an in-memory
+cohort context and routes selection events through a shared bus
+(\texttt{hex-select}, \texttt{person-selected},
+\texttt{match-accepted}, \texttt{match-restored}). The backend caches
+the cleaned CMGPD-LN parquet, the HGT model checkpoint, and DS0003
+per-person life histories.
+
+\textbf{V1 --- Acceptance curve.} The $x$-axis advances in cumulative
+\emph{accepted-edge} ticks; the $y$-axis plots running recall@1 of
+operator commits against the cohort's known ground truth. A
+horizontal reference line marks the static HGT-only baseline,
+computed via per-cohort Hungarian assignment. The step function
+makes each commit's contribution visible (DG2).
+
+\textbf{V2 --- Processed pairs with multi-label provenance.} Every
+accepted match becomes a row carrying husband and wife IDs, HGT
+score, score gap, the Hungarian verdict, and \system's core artefact:
+a \emph{source} chip set. \emph{Rules:} a V4-batch commit receives
+\textsf{HGT} (sage); a V5-MAS commit receives \textsf{MAS} (amber);
+when the MAS-chosen wife coincides with the husband's HGT
+$\arg\max$, the row carries \emph{both} chips, signalling convergent
+agreement. A trailing \emph{restore} button issues
+\texttt{POST /negotiate/\{id\}/restore}, removes the entry from the
+accept log, and broadcasts \texttt{match-restored}, causing V1's
+curve to recompute, V3's masked dot to reappear, and V4's bipartite
+edge to re-enter selection (DG5).
+
+\textbf{V3 --- Honeycomb embedding canvas.} V3 carries DG1. Pairs are
+projected into 2-D via per-cohort metric MDS on the HGT joint
+embedding and binned into a flat-top hex grid via an iterative
+inward-attraction packer (capacity 12 pairs per cell). Three modes:
+\texttt{honeycomb} (cell colour encodes mean signed score gap on a
+divergent ramp anchored at $\pm 2$ logits, with cluster borders
+between hexes of differing cluster IDs); \texttt{scatter} (one dot
+per pair, percentile-clipped 2nd--98th MDS coordinates); and
+\texttt{mixed} (hexes dimmed to 0.55 with dots overlaid). V3
+\emph{masks} dots whose $(h, w)$ is in the running accept set; the
+canvas thus reflects ``what is left to commit'' at any point.
+
+\textbf{V4 --- Bipartite detail and batch.} V4 unfolds V3's
+selection into a husband-on-left, candidate-on-right bipartite, with
+B\'ezier edges weighted by HGT score. A \emph{profile popup}
+(banner labelled \emph{Solid White}, region labelled
+\emph{South Liaoning}) opens on any node click. A \emph{batch}
+commit accepts every husband's HGT $\arg\max$ above a configurable
+score-gap threshold (default 1.0, $\approx$\,87\% precision on the
+1882 cohort), all surfacing in V2 with the \textsf{HGT}-only chip.
+A husband-node click also emits \texttt{person-selected}, which V5
+picks up to load that husband as the negotiation target.
+
+\textbf{V5 --- The agent arena.} V5 is the deliberative core (DG3,
+DG4). After a husband loads, V5 displays a collapsible
+\emph{life-history} panel with the LLM-produced persona headline,
+matched SEAL motif chips, an event pill strip (e.g., 1864
+\emph{Birth}, 1880 \emph{In-Marriage}) and a terraced income
+trajectory. The candidate grid renders one card per top-$K$ wife,
+each with persona summary, round-by-round score pips
+(\textsf{R$N$:t$X$/c$Y$}) for $t_i$ and $s_i$, and a chevron that
+expands the full per-round transcript. The \emph{hint console}
+above the grid accepts free-form messages addressed to
+\texttt{@everyone}, \texttt{@target}, or \texttt{@c-XX}; submitted
+hints land in a per-husband \texttt{asyncio.Queue} on the server,
+are drained between rounds, and are interpolated into the next
+round's prompt as system context.
+
+\textbf{V6 --- Rule injector.} A small panel of macro sliders
+(paternal-lineage importance, sibling overlap, household share,
+banner match, macro era) re-weights the SEAL motif pre-prior; four
+boolean toggles let the analyst suppress
+$\mathsf{m}_1$--$\mathsf{m}_4$; a $\lambda$ input exposes
+\cref{eq:final} sensitivity.
+
+\textbf{Linked interaction.} The four bus events form the backbone of
+inter-view coordination (DG6). On \texttt{match-accepted}: V2
+prepends, V1 reloads, V3 masks, V4 drops the edge. On
+\texttt{match-restored}: the symmetric reverse. This single source of
+truth is what allows \system\ to behave as a single instrument
+rather than as a collection of widgets.
+
+% =====================================================================
+\section{Multi-Agent Negotiation Protocol}
+\label{sec:mas}
+
+\textbf{Persona instantiation.} Each persona prompt is rendered with:
+profile (sex, birth year, banner-affiliation \emph{label}, geographic
+region \emph{label}, community ID, household ID); the HGT pre-score
+against the husband; an \emph{event block} formatted as
+\texttt{\{year\}: \{event\_1\_label\} / \{event\_2\_label\}}
+constructed from DS0003 EVENT\_1/2 codes substituted via
+\texttt{event\_value\_labels.json} (e.g., 1=Death, 7=In-Marriage,
+13=Returned-after-absconding); an \emph{income block} formatted as
+\texttt{\{year\}: \{income\} (\{level\})} bucketed at the cohort's
+33rd/66th percentiles; the SEAL motif tag set; and any hints
+addressed to this role. The LLM returns a JSON object with four
+fields --- \texttt{headline}, \texttt{traits}, \texttt{values},
+\texttt{red\_flags} --- which the client renders verbatim as chips.
+
+\textbf{Round structure (\cref{alg:rounds}).}
+Round 1 generates personas for the husband and all $K$ candidates in
+parallel. Rounds 2--5 walk through canonical foci
+(\emph{impressions}, \emph{deep-dive}, \emph{rebuttals},
+\emph{alignment}); each round is a single batched query call from
+the husband (returning per-candidate scores $t_i$ and one pointed
+question per candidate) followed by $K$ parallel candidate answer
+calls (each returning $a_{c,r}$ and counter-score $s_{c,r}$).
+Round 6 computes \cref{eq:final} from the round-5 scores and
+publishes the \emph{final\_ranking}. Critically, every round
+terminates at a \texttt{round\_paused} frame and the orchestrator
+suspends on an \texttt{asyncio.Event} that is set only when the
+operator clicks \emph{Approve \& Advance}; this gating realises DG4.
+Per-call \texttt{try}/\texttt{except} falls back to a deterministic
+heuristic so the protocol remains complete even when the LLM
+endpoint errors.
+
+\begin{algorithm}[t]
+\caption{Six-round bilateral negotiation.}
+\label{alg:rounds}
+\small
+\begin{algorithmic}[1]
+\Require husband $h$, candidate set $C$, cohort year $y$, ablation $a$
+\State $\pi_h \gets \texttt{chat\_json(persona|}h\texttt{)}$;
+       publish \texttt{persona}, motifs $\emptyset$
+\ForAll{$c \in C$ in parallel}
+  \State $\pi_c \gets \texttt{chat\_json(persona|}c\texttt{)}$;
+         publish \texttt{persona}, motifs $\mathcal{M}(h, c)$
+\EndFor
+\State \textbf{wait} \texttt{advance\_event}; drain hint queue
+\For{round $r = 2, 3, 4, 5$}
+  \State $(S_r, Q_r) \gets \texttt{chat\_json(query|}h, \pi_h,
+     \{\pi_c\}, r\texttt{)}$
+  \ForAll{$c \in C$ in parallel}
+    \State $(a_{c,r}, s_{c,r}) \gets
+       \texttt{chat\_json(answer|}c, \pi_c, \pi_h, q_{c,r}, r\texttt{)}$
+    \State publish \texttt{query}, \texttt{answer}
+  \EndFor
+  \State publish \texttt{round\_scores}; \texttt{round\_paused};
+         wait; drain hints
+\EndFor
+\State Compute $\mathrm{score}_i$ per \cref{eq:final}; rank
+\State publish \texttt{final\_ranking}
+\State \textbf{on user accept}: \texttt{commit\_match}; broadcast
+       \texttt{match-accepted}
+\end{algorithmic}
+\end{algorithm}
+
+% =====================================================================
+\section{Use Cases}
+\label{sec:cases}
+
+We illustrate three scenarios drawn from formative sessions with
+E1--E3.
+
+\textbf{UC1: cohort triage of the 1882 marriages (E1).}
+E1 opens the 1882 ablated cohort from the CMGPD-LN testbed. V3 shows
+a tight cluster of green hexes; she clicks one, V4 unfolds the
+8-husband bipartite (all score gaps above 2.0), and a batch commit
+at threshold 1.0 commits 7 of 8 in one stroke (\textsf{HGT} chip).
+The remaining husband routes to V5; the persona reveals an income
+trajectory that flattened in 1879 and a single \emph{Lost} event in
+1881. E1, recognising this as a known absconding pattern, types
+\texttt{@everyone be skeptical of stability claims} into the hint
+console; rounds 3--5 reflect the directive in their queries and
+final scores. The negotiation converges on a different wife than
+HGT's $\arg\max$, and the row in V2 acquires \emph{both}
+\textsf{HGT} and \textsf{MAS} chips on acceptance, recording the
+divergence between the two pipelines.
+
+\textbf{UC2: probing the maternal-edge ablation (E3).}
+E3 toggles between an \texttt{ablated} cohort (only $r_{hw}$
+suppressed) and the \texttt{unablated} graph; the honeycomb geometry
+visibly shifts and clusters reorganise around banner co-membership.
+Suppressing $\mathsf{m}_4$ in V6 and re-running a single husband's
+negotiation in V5 changes the match --- the system surfaces the
+motif-level dependency rather than absorbing it silently.
+
+\textbf{UC3: real-jiapu evidence injection (E2).}
+E2 simulates the deployment scenario: she uses \system\ \emph{as if}
+the cohort were a real jiapu with only the wife's surname
+(\emph{Wang}) recorded, while the underlying data still has hidden
+ground truth available for grading. After round 1 she types
+\texttt{@everyone wife's surname is Wang} into the hint console;
+candidates whose surname does not match are surfaced with reduced
+$t_i$ scores in their explanations, and the surname-Wang candidate's
+persona is reasoned about explicitly in the next round's transcript.
+The final commit's chip is \textsf{MAS}-only --- HGT's $\arg\max$
+was a different wife --- and V2's audit trail records the divergence.
+
+% =====================================================================
+\section{Discussion and Limitations}
+\label{sec:discussion}
+
+\textbf{Generalisation beyond the testbed.}
+\system\ is validated on CMGPD-LN's ablation harness, but the
+deployment target is real jiapu, where ground truth is unavailable
+and per-person evidence is sparser. Our event- and income-block
+formatters degrade gracefully (rendering \texttt{(no events on
+register)} when DS0003 is empty), but field-level ablation studies
+on synthetic-sparsity panels are an immediate next step.
+\textbf{LLM provenance auditability.} The per-round transcript is
+preserved verbatim; per-call \texttt{try}/\texttt{except} +
+heuristic fallback isolates the orchestrator from any single bad
+call, but a fully audited corpus would require attaching cryptographic
+attestations to each prompt+response pair, which we do not do.
+\textbf{Monocultural priors.} The Qing-era persona prompt embeds
+banner endogamy and lineage continuity explicitly; reuse for a
+Korean, Vietnamese, or Han-elsewhere lineage tradition would require
+redesigning these defaults --- DG3 was deliberately written to surface
+this so the prompt templates remain a first-class artefact of the
+design.
+\textbf{Compute envelope.} A six-round real-Qwen negotiation for six
+candidates costs $\approx$\,30--45\,s on the DashScope
+\texttt{qwen-plus-2025-04-28} endpoint; round-1 personas and
+round-2--5 answers dispatch in parallel via
+\texttt{asyncio.gather}, so the interface remains responsive.
+
+% =====================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+\system\ reframes genealogical marriage-edge reconstruction as a
+collaborative analytic process between an HGT link-prediction
+backbone, a SEAL motif-grounded LLM agent population, and a historian
+whose archival hints are first-class inputs to the loop. By making
+provenance, narrative, and reversibility constitutive of every commit
+--- not after-the-fact explanations --- \system\ provides a workspace
+in which low-confidence GNN rankings become defensible reconstructions.
+We validate on CMGPD-LN, whose ablation harness lets each design
+decision be graded against ground truth; the deployment target is
+real jiapu, where ground truth is unavailable but the female-record
+gap is the actual problem \system\ is built around. The system
+generalises in the direction that matters: every artefact remains
+interpretable to the historian who must vouch for the finished tree.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%% Bibliography %%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\bibliographystyle{abbrv-doi}
+\bibliography{paper}
+
+\end{document}
