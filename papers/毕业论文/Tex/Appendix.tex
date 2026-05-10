@@ -8,7 +8,7 @@
 
 第一轮"印象生成"阶段，系统对每一候选个体调用一次本模板，由大语言模型基于档案与生命事件输出一段角色简介；输出严格约束为 JSON 对象，便于后续轮次复用。
 
-\begin{verbatim}
+{\footnotesize\begin{verbatim}
 You are constructing a persona resume for a real historical person from the
 Qing-dynasty Liaoning genealogy panel (CMGPD-LN, 1749-1909). Reason from the
 profile and life-history evidence; do NOT invent facts. Where evidence is
@@ -52,13 +52,13 @@ Produce a JSON object with EXACTLY these keys:
 }
 
 Respond with ONLY the JSON object, no surrounding prose.
-\end{verbatim}
+\end{verbatim}}
 
 \section{询问与初评分模板（用于第二至第五轮发问端）}\label{sec:appendix-query}
 
 第二至第五轮的发问端使用本模板。占位符 \texttt{\{round\_focus\}} 由 \S\ref{sec:appendix-round-focus} 给出的轮次焦点串填入，使每一轮的关注重心从印象、价值观、可信度切换至长期相容性。模板要求模型同时输出对每一候选的当前评分与一条针对其简介中风险点的精准提问。
 
-\begin{verbatim}
+{\footnotesize\begin{verbatim}
 You are person {asker_id} ({asker_role}) in a Qing-dynasty marriage
 negotiation. You have just read the resumes of all candidates and you must:
 
@@ -96,13 +96,13 @@ Respond with a JSON object:
 
 Use the EXACT candidate_id strings from the list above. Respond with ONLY the
 JSON object, no surrounding prose.
-\end{verbatim}
+\end{verbatim}}
 
 \section{答复模板（用于答复端）}\label{sec:appendix-answer}
 
 收到来自发问端的提问后，答复端按本模板生成一段角色化的回应，并对发问端给出反向评分。该反向评分被作为对称惩罚式最终评分（参见式~\eqref{eq:final-score}）的输入之一。
 
-\begin{verbatim}
+{\footnotesize\begin{verbatim}
 You are person {answerer_id} ({answerer_role}) in a Qing-dynasty marriage
 negotiation. You have received a question from {asker_id}. Answer in
 character, grounded in your own resume, and then score the asker.
@@ -133,13 +133,13 @@ Respond with a JSON object:
 }
 
 Respond with ONLY the JSON object, no surrounding prose.
-\end{verbatim}
+\end{verbatim}}
 
 \section{评分更新模板（用于每轮交换后的评分修订）}\label{sec:appendix-score}
 
 每一轮的提问—答复完成后，发问端再次调用本模板，依据当轮交换的全部内容更新对每一候选的评分。该轮末评分作为下一轮的初始评分输入，从而构成跨轮分数演化轨迹，便于在流程视图中以折线方式呈现给历史学家。
 
-\begin{verbatim}
+{\footnotesize\begin{verbatim}
 You are person {scorer_id} ({scorer_role}). After exchanging a query and an
 answer with each candidate, update your score for each one (1-10).
 
@@ -167,7 +167,7 @@ Respond with a JSON object:
 
 Use the EXACT candidate_id strings. Respond with ONLY the JSON object, no
 surrounding prose.
-\end{verbatim}
+\end{verbatim}}
 
 \section{各轮焦点固定文本}\label{sec:appendix-round-focus}
 
@@ -196,13 +196,13 @@ surrounding prose.
 
 四类模板末尾均含 \texttt{\{hint\_block\}} 占位符，由后端在每轮发起前从历史学家在协商竞技场视图（参见 \S\ref{sec:vis-E} 与表~\ref{tab:hint-routing}）中提交的指令队列中提取本轮命中的提示后填入。若本轮无任何命中，该占位符渲染为空字符串；若有命中，则按下列固定格式拼接：
 
-\begin{verbatim}
+{\footnotesize\begin{verbatim}
 HISTORIAN HINTS (apply these strictly)
 --------------------------------------
 - @everyone be skeptical of stability claims
 - @c-3 boost: same banner, strong endogamous match
 - @target penalise: known instability event in 1881
-\end{verbatim}
+\end{verbatim}}
 
 每一行以"地址作用域 + 动词 + 自由文本"组成；地址作用域与动词的可选取值与语义见正文表~\ref{tab:hint-routing}。模型被显式要求"严格遵循"，但保留对其在角色简介与档案证据基础上的自洽性判断，从而避免提示完全替代论证逻辑。
 

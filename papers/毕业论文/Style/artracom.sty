@@ -94,6 +94,8 @@
 %- 调整量 1cm（约 28.45pt）；若仍偏高/偏低，可在此处微调或重设为 0pt 复原。
 \addtolength{\headsep}{1cm}%
 \addtolength{\textheight}{-1cm}%
+%- 缓解 Overfull \hbox：允许 LaTeX 在紧排行间适度拉伸 glue
+\setlength{\emergencystretch}{3em}%
 %---------------------------------------------------------------------------%
 \endinput
 
