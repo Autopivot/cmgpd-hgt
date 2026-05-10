@@ -43,26 +43,24 @@ xelatex Thesis.tex
 - `Undefined control sequence \citep`：需运行 `bibtex Thesis` 一次
 - 图片找不到：确认 `Img/Framework.pdf` 与 `Img/system.pdf` 存在（已随本次提交一起入库）
 
-## 论文结构总览
+## 论文结构总览（第二轮 rebuttal 修订后）
 
-正文 11 章，共约 **19,001** 字：
+正文 9 章，共约 **17,309** 字：
 
-| 章 | 文件 | 字数 | 重点级 |
-|---|---|---:|:---:|
-| 摘要（中英文） | Tex/Frontpages.tex | — | — |
-| 1 引言 | Tex/Chap_01_Intro.tex | 1,382 | M |
-| 2 相关工作 | Tex/Chap_02_Related.tex | 1,630 | M |
-| 3 形成性研究 | Tex/Chap_03_Formative.tex | 2,289 | **H** |
-| 4 数据集与异构图建模 | Tex/Chap_04_Data.tex | 1,712 | M |
-| 5 HGT 编码器与婚姻评分 | Tex/Chap_05_HGT.tex | 2,404 | **H** |
-| 6 SEAL 子图模式提取 | Tex/Chap_06_SEAL.tex | 2,184 | **H** |
-| 7 多智能体协商协议 | Tex/Chap_07_MAS.tex | 1,724 | M |
-| 8 可视分析系统设计 | Tex/Chap_08_Vis.tex | 2,227 | M |
-| 9 系统实现 | Tex/Chap_09_Impl.tex | 879 | M |
-| 10 案例研究与专家评估 | Tex/Chap_10_Case.tex | 1,620 | M |
-| 11 讨论、局限与结论 | Tex/Chap_11_Conclusion.tex | 950 | L |
-| 致谢 | Tex/Backmatter.tex | （留空） | — |
-| 参考文献 | Biblio/ref.bib | — | — |
+| 章 | 文件 | 字数 |
+|---|---|---:|
+| 摘要（中英文） | Tex/Frontpages.tex | — |
+| 1 引言 | Tex/Chap_01_Intro.tex | 1,419 |
+| 2 相关工作 | Tex/Chap_02_Related.tex | 1,630 |
+| 3 形成性研究 | Tex/Chap_03_Formative.tex | 2,289 |
+| 4 系统概述（新） | Tex/Chap_04_Overview.tex | 1,708 |
+| 5 后端引擎（合并旧 §4–§7） | Tex/Chap_05_Backend.tex | 4,953 |
+| 6 可视分析系统设计 | Tex/Chap_06_Vis.tex | 1,853 |
+| 7 系统实现 | Tex/Chap_07_Impl.tex | 883 |
+| 8 案例研究与专家评估 | Tex/Chap_08_Case.tex | 1,624 |
+| 9 讨论、局限与结论 | Tex/Chap_09_Conclusion.tex | 950 |
+| 致谢 | Tex/Backmatter.tex | （留空） |
+| 参考文献 | Biblio/ref.bib | — |
 
 字数远超 ≥10,000 字 / 30 页正文的硬性要求。
 
