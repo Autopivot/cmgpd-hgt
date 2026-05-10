@@ -1,0 +1,21 @@
+\chapter{系统实现}\label{chap:impl}
+
+本章交代将前述算法、协商协议与可视化设计落地为可运行原型时的工程组织。整套系统约 9{,}500 行代码，按职责划分为数据与模型、后端服务、前端界面三层。下文依次说明三层架构、大语言模型端点与本地兜底、DS0003 整合，以及前后端数据流与时间因果子图缓存键。
+
+\section{三层架构概览}\label{sec:impl-arch}
+
+数据与模型层位于 \texttt{src/}，约 2{,}400 行 Python 代码，以 PyTorch\citep{paszke2019pytorch} 与 PyTorch Geometric\citep{fey2019pyg} 为底座，按"数据清洗、特征工程、时间因果子图构造、HGT 训练、SEAL motif 提取"五阶段组织，所有超参集中暴露于 \texttt{src/config.py}。后端服务层位于 \texttt{server/}，约 2{,}100 行，以 FastAPI 为框架对外暴露三类 REST 接口：\texttt{/api/score} 返回候选对的初评分，\texttt{/api/profile/\{id\}} 提供个体档案查询，\texttt{/api/llm\_config} 暴露大语言模型端点配置；同时以 WebSocket 通道把六轮协商的逐轮 token 流式回送前端。智能体编排在 round-1 以 \texttt{asyncio.gather} 并行触发各身份调用，跨轮节奏则以 \texttt{asyncio.Event} 让史学家单步推进。前端界面层位于 \texttt{viz-mas/src/}，约 5{,}000 行，以 Vue~3 与 Vite 构建：六视图分别落实为 \texttt{OverviewView}、\texttt{ProcessedRelationsTable}、\texttt{HexEmbeddingView}、\texttt{BipartiteDetailView}、\texttt{AgentBattleView}、\texttt{RulerInjectorView} 六个单文件组件，并以共享的 Pinia store 持有候选对与协商状态，以基于 mitt 的事件总线在视图之间转发提示路由消息。
+
+\section{大语言模型端点与本地兜底}\label{sec:impl-llm}
+
+智能体的语言推理统一由 \texttt{qwen-plus-2025-04-28} 检查点承担，调用经由 DashScope 兼容 OpenAI 接口风格的 \texttt{/chat/completions} 端点完成；后端进程在启动时读取环境变量 \texttt{DASHSCOPE\_API\_KEY}。若该变量未设置，后端切换至本地 stub 智能体，对每一轮返回确定性分数与套话化的论据片段，使整条流水线在不可联网的展厅或评审现场仍可演示六视图与协商流程。
+
+\section{DS0003 与档案查询}\label{sec:impl-ds0003}
+
+DS0003 是 ICPSR 分发的事件登记子表，按 \texttt{RECORD\_NUMBER} 与人年级主表 DS0001 形成 1:1 关联，跨 1{,}513{,}357 行记录。本研究将其在 \texttt{RECORD\_NUMBER} 上对齐后落盘为 Apache Parquet 列式文件，使前端通过 \texttt{/api/profile/\{id\}} 触发的查询在亚秒内返回。事件代码到可读字符串的翻译由随附的 \texttt{event\_value\_labels.json} 词典完成；当某位个体在某年没有任何登记事件时，前端档案面板渲染为"（无登记事件）"而非保留空白，以便区分"档案缺失"与"接口异常"。
+
+\section{数据流与子图缓存}\label{sec:impl-cache}
+
+为避免在前端公共目录与规范数据目录之间维护冗余副本，本研究在 Vite 开发服务器中注入了一段中间件：浏览器请求 \texttt{/data/*} 时，中间件将其转发到母仓库下的规范数据目录，从而在开发期实现"零拷贝即可访问"。
+
+时间因果子图的磁盘缓存由 \texttt{src/stage3\_temporal.py} 实现，缓存键为四元组 \((t,\ \mathit{schema\_version},\ \mathit{ablation\_tag},\ \operatorname{sha1}(\mathit{drop\_pairs}))\)。其中 \(\mathit{ablation\_tag}\) 为必要字段：消融与未消融运行只改写 \(r_{ms}\)、\(r_{md}\) 两类边的内容，\(r_{hw}\) 的丢弃集合相同，因而 \(\operatorname{sha1}(\mathit{drop\_pairs})\) 哈希在两类运行下完全一致；若不引入 \(\mathit{ablation\_tag}\)，第二次运行将静默命中第一次的缓存而读到错误的子图内容。缓存的失效由 \texttt{--force} 开关触发，确保模式版本升级或边内容变化时旧缓存即时清空。
