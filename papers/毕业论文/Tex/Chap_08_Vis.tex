@@ -4,9 +4,23 @@
 
 \section{总体框架}\label{sec:vis-overall}
 
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width=0.95\linewidth]{Framework}
+    \caption{GeneaLink 两阶段框架。校准阶段在带有真值标注的队列上以异构图变换器候选排序与 SEAL 微观图样为基础，由历史学家在协商竞技场内整定权重并落盘为单元格层级先验；部署阶段对新队列重做候选生成，并自动加载先验注入协商首轮提示。}
+    \label{fig:framework}
+\end{figure}
+
 系统遵循校准与部署两阶段流水线，整体框架如图~\ref{fig:framework}所示。\textbf{校准阶段}选取存在标注的队列年（默认 1882 年），先完成异构图变换器候选排序与 SEAL 微结构图样抽取，再在协商竞技场内迭代调整规则权重与图样开关；当某嵌入空间区域的真阳性比例稳定提升后，史学家把该区域的权重、图样状态与协商证据聚合为单元格层级先验写入数据库。\textbf{部署阶段}面向无标注的新队列（如 1885 年及以后），系统再次生成候选并按嵌入坐标查询所属单元格，自动加载先验注入协商首轮提示。两阶段共享同一图模型与同一界面，区别仅在规则视图的读写状态与性能概览的纵轴语义。这一设计把群体级别的空间经验跨队列迁移，避免逐对实例记忆，是 DG6 的主要落点。
 
 \section{六联动视图概览}\label{sec:vis-views}
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width=\linewidth]{system}
+    \caption{GeneaLink 的六联动视图布局。\textit{(A)} 性能概览跟踪队列层级进度；\textit{(B)} 流程视图以来源标记与一键回滚维护提交账本；\textit{(C)} 嵌入视图以稳定的蜂窝画布组织候选；\textit{(D)} 二分图视图支持单对审视与批量接受；\textit{(E)} 多智能体协商竞技场可视化六轮辩论并支持提示注入；\textit{(F)} 规则视图允许专家整定权重并跨队列迁移先验。}
+    \label{fig:system}
+\end{figure}
 
 界面采用三行两列布局，整体外观如图~\ref{fig:system}所示。表~\ref{tab:six-views}归纳了视图编号、名称、主要交互动作及其对应的设计目标。
 
