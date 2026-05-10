@@ -86,5 +86,14 @@
 \providecommand*{\MyFactor}{0.6}% for single figure
 \providecommand*{\MySubFactor}{0.45}% for subfigure
 %---------------------------------------------------------------------------%
+%->> Page-layout fine-tuning
+%---------------------------------------------------------------------------%
+%- 把正文整体下移：扩大页眉与正文之间的间距，并相应缩短正文高度，
+%- 既避免章首紧贴页眉，又不让正文溢出页面下边缘。
+%- 模板原值 (Style/ucasthesis.cls)：headsep=17.5pt, textheight=246.2mm。
+%- 调整量 1cm（约 28.45pt）；若仍偏高/偏低，可在此处微调或重设为 0pt 复原。
+\addtolength{\headsep}{1cm}%
+\addtolength{\textheight}{-1cm}%
+%---------------------------------------------------------------------------%
 \endinput
 
