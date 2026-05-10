@@ -1,0 +1,27 @@
+\chapter{相关工作}\label{chap:related}
+
+本章从四条线索梳理与本研究密切相关的既有工作：家谱可视分析、面向链路预测的异构图学习、大语言模型驱动的多智能体推理，以及混合主动可视分析。每节先归纳代表性方法，再在末段把对比聚焦于本研究试图填补的空缺。
+
+\section{家谱与历史档案的可视分析}\label{sec:related-vis-genealogy}
+
+家谱数据天然带有层级结构，早期可视化系统多采用节点—连线的树状布局。McGuffin 与 Balakrishnan\citep{mcguffin2005genealogy} 比较了多种家系树绘制策略，指出成员规模达千人量级时树形布局易出现视觉杂乱与节点遮挡。Bezerianos 等\citep{bezerianos2010genealogy} 提出的 GenoQuilts 借助对角填充矩阵的图形语法使跨代际链路得以压缩呈现。Liu 等\citep{liu2017genealogyvis} 设计的 GenealogyVis 把家系结构与人口学属性、社会经济变量耦合于同一界面。围绕档案不确定性，Windhager 等\citep{windhager2018vis} 综述了文化遗产可视化的方法学进展，强调档案残缺时应配合概率显示；Dörk 等\citep{dork2012pivotpaths} 与 Henry 等\citep{henry2006matrixexplorer} 则分别在主题路径与节点—邻接矩阵之间提出了适合大规模社会网络浏览的混合表示。
+
+近年的工作开始关注家谱数据的"主动修补"。Shan 等\citep{shan2025reexamining} 重新审视了众包式家谱协作平台的方法论，指出仅靠浏览与人工补全难以形成可复用的修复经验。综观上述研究，可视分析在结构浏览与社会网络对照方面已积累成熟手段，但围绕"档案缺失补全"的系统仍较少：要么只面向阅读，要么仅在静态层面提示不确定，缺乏把计算预测、智能体推理与历史学家判断在同一界面内闭环的机制。
+
+\section{异构图链路预测}\label{sec:related-graph}
+
+链路预测是图机器学习的核心任务之一。Kipf 与 Welling\citep{kipf2016gcn} 提出的图卷积网络（Graph Convolutional Network，GCN）以谱域近似形式建立了节点级表征学习的基础。然而 GCN 假设节点与边类型同质，难以直接刻画家谱这类含多类节点与多类边的网络。Hu 等\citep{hu2020hgt} 提出的异构图变换器（Heterogeneous Graph Transformer，HGT）借助元数据快照为每种边类型注册独立的注意力投影，并将注意力机制\citep{vaswani2017attention} 与类型特定的聚合相结合，在多类型图上的知识图补全与引用网络任务中表现稳定。
+
+与上述基于全图传播的范式不同，Zhang 与 Chen\citep{zhang2018seal} 提出的子图链路预测（SEAL）把链路预测表述为以候选对为中心的子图分类问题，并通过双半径节点标注（Double-Radius Node Labeling，DRNL）为子图内每个节点生成可学习的位置标签，从而捕捉候选对周围的局部拓扑指纹。围绕大语言模型与图神经网络的融合，Pan 等\citep{pan2024llmkg} 给出了图—语言统一建模的研究路线，Tang 等\citep{tang2024graphgpt} 与 Chen 等\citep{chen2024llaga} 进一步提出了面向开放领域知识图谱的指令微调与图—语言对齐方案。然而这些方法主要面向开放域知识图，对历史档案中常见的极端稀疏、严格时间约束与文化语境敏感等性质缺乏专门处理，亦未把结构线索翻译为可供领域专家阅读的证据。
+
+\section{大语言模型与多智能体推理}\label{sec:related-llm-mas}
+
+大语言模型（Large Language Model，LLM）展现出可观的多步推理与角色扮演能力。Wei 等\citep{wei2022cot} 提出的思维链（Chain-of-Thought，CoT）提示证明，在提示中显式鼓励中间推理步骤能提高复杂任务的正确率。Park 等\citep{park2023generative} 提出生成式智能体，把记忆、计划与反思组件加入角色扮演 LLM 中，得到具有长程行为一致性的虚拟个体。在多智能体协商方面，Liang 等\citep{liang2023llm} 通过多轮辩论提示让多个 LLM 实例彼此质询，验证了"提议—反驳"式交互对发散推理的促进作用；Chan 等\citep{chan2023chateval} 设计的 ChatEval 在评判任务中安排不同角色的智能体循环讨论，提升了对长答案的鉴别力。
+
+然而上述工作主要服务于开放域对话或自动评测，缺少与外部图结构化证据的紧耦合，也少有为领域专家提供实时干预通道的设计。更值得警惕的是，Turpin 等\citep{turpin2023faithfulness} 指出 LLM 给出的解释往往是事后的合理化叙述，而非真实驱动其判断的因素，这对"以 LLM 推理代替历史考据"构成根本挑战，呼唤把外部结构证据与人工复核同时纳入协商流程。
+
+\section{混合主动可视分析}\label{sec:related-mixed-init}
+
+模型主导与用户主导之间的张力是可视分析长期关注的议题。Endert 等\citep{endert2017state} 综述了交互式机器学习与可视分析的融合现状，强调"语义交互"应能让用户的高层意图反向影响模型参数。Sacha 等\citep{sacha2014knowledge} 提出的知识生成模型把可视分析视为分析者在数据、可视化与认知之间的循环，明确把人类先验作为模型外的重要变量。Amershi 等\citep{amershi2014modeltracker} 的 ModelTracker 将分类错误以可视化方式聚类，便于非专家用户定位模型缺陷；Fails 与 Olsen\citep{fails2003interactiveml} 较早提出交互式机器学习概念，主张让用户通过示例标注直接驱动模型迭代。Green 与 Hu\citep{green2009mixedinitiative} 总结的混合主动准则进一步强调：界面应在系统主动建议与用户显式控制之间作合理的责任分摊。
+
+上述研究奠定了"人在回路"的方法论基础，但多数面向通用分类或文本任务，缺少针对多智能体协商场景的证据呈现机制，也较少同时管理来自图模型、智能体与人工三类来源的决策证据，难以在异质证据并存时为历史学家提供清晰的责任划分与可逆的提交路径。
