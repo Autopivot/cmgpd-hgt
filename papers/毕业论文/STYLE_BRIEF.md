@@ -169,3 +169,93 @@
 4. 一行报告：`PR: <url>` 或 `PR: none — <reason>`
 
 协调者负责 Phase 2 集成、Phase 3 自审 rebuttal、Phase 4 PDF 编译与交付。
+
+---
+
+# v2 增补（rebuttal 第二轮，2026-05-10）
+
+第一轮交付后用户给出评审意见，对叙述风格与版面提出新约束。下列 §7–§10 与 §1–§6 同等强制。冲突时以本节较新规则为准。
+
+## §7 路径与扩展名禁令
+
+下列字符串 **不得出现在任何章节正文** 中（公式与算法伪代码内的极少量符号除外，且需先与协调者评估必要性）：
+
+- 路径片段（含尾斜杠）：`src/`、`server/`、`viz-mas/`、`seal/`、`data/`、`papers/`、`checkpoints/`、`Tex/`、`Biblio/`、`Style/`、`Img/`
+- 文件扩展名：`.rda`、`.json`、`.parquet`、`.tex`、`.pt`、`.csv`、`.gz`、`.py`、`.bib`、`.bat`、`.sh`、`.cls`、`.sty`、`.md`、`.mp4`、`.svg`、`.eps`
+
+如必须指代某模块层，统一使用：
+- "数据与模型层"代替 `src/`
+- "后端服务层"代替 `server/`
+- "前端界面层"代替 `viz-mas/`
+- "子图模式提取模块"代替 `seal/`
+- "数据缓存目录"代替 `data/processed/...`
+- "训练快照"代替 `checkpoints/best.pt`
+- "超参集中文件"代替 `src/config.py`
+
+## §8 英文字段中文化对照表（强制替换）
+
+下表左列在正文中 **不得直接出现**，必须替换为右列。首次出现外部专有名词时可以"中文（English）"对照，之后只用中文：
+
+| 原英文标识 | 中文替换 |
+|---|---|
+| `x_sex` / `SEX` | 性别字段 / 性别向量 |
+| `x_relationship` / `RELATIONSHIP` | 关系字段 / 关系嵌入 |
+| `x_continuous` / `BIRTHYEAR` | 连续特征 / 出生年 |
+| `x_occupational` / `POSITION` / `TITLE` / `SALARY` | 任职特征 / 官职、品阶、俸禄三项指示位 |
+| `x_macro` | 宏观协变量 |
+| `RECORD_NUMBER` | 记录编号 |
+| `EVENT_1` / `EVENT_2` | 第一事件代码 / 第二事件代码 |
+| `FATHER_ID` / `MOTHER_ID` / `HOUSEHOLD_ID` / `PERSON_ID` | 父亲编号 / 母亲编号 / 家户编号 / 个体编号 |
+| `PersonEmbedder` | 人物嵌入器 |
+| `subgraph_at_year` | 时间因果子图构造函数 |
+| `BATCH_YEARS` | 批队列年数 |
+| `NEG_PER_POS` | 每正例负样本数 |
+| `HGTConv` | 异构图卷积层 |
+| `asyncio.gather` / `asyncio.Event` / `asyncio.Queue` | 并行调度原语 / 推进信号 / 提示队列 |
+| `DASHSCOPE_API_KEY` | 大模型服务凭证 |
+| `qwen-plus-2025-04-28` | 千问 Plus 模型（具体版本） |
+| `event_value_labels.json` | 事件代码翻译词典 |
+| `macro_table` | 宏观协变量查找表 |
+| `Apache Parquet` | 列式存储 |
+| `WebSocket` | 流式通信通道 |
+| `FastAPI` | 后端服务框架 |
+| `Vue 3 + Vite` | 前端组件框架 |
+| `mitt` / `Pinia` | 事件总线库 / 状态管理库 |
+
+## §9 章节合并约束（新章节标签命名空间）
+
+第二轮修订 **不再使用** 下列旧标签：`chap:data`、`chap:hgt`、`chap:seal`、`chap:mas`。它们一律合并为 `chap:backend`，下设 4 个子节标签：
+- `sec:backend-graph`（旧 chap:data 内容）
+- `sec:backend-hgt`（旧 chap:hgt 内容）
+- `sec:backend-seal`（旧 chap:seal 内容）
+- `sec:backend-mas`（旧 chap:mas 内容）
+
+新章节目录标签如下：
+
+| 编号 | 标题 | 章节标签 |
+|---|---|---|
+| 1 | 引言 | `chap:intro` |
+| 2 | 相关工作 | `chap:related` |
+| 3 | 形成性研究 | `chap:formative` |
+| 4 | **系统概述** | `chap:overview`（新） |
+| 5 | **后端引擎** | `chap:backend`（合并） |
+| 6 | 可视分析系统设计 | `chap:vis` |
+| 7 | 系统实现 | `chap:impl` |
+| 8 | 案例研究与专家评估 | `chap:case` |
+| 9 | 讨论、局限与结论 | `chap:conclusion` |
+
+跨章引用的迁移规则：
+- 任何 `\ref{chap:hgt}` / `\ref{chap:data}` / `\ref{chap:seal}` / `\ref{chap:mas}` → 改为 `\ref{chap:backend}`
+- 任何 `\ref{sec:ablation}`（原 chap:data 内）→ 改为 `\ref{sec:backend-graph}`
+
+## §10 叙述风格指引（参考本科毕业论文规范）
+
+本论文是工科本科毕业论文，非学术会议短论文。叙述应：
+- 先说"为什么这样设计"（动机、用户需求、设计目标）；再说"具体怎么做"（核心方法、关键参数、关键公式）；最后说"做完后的效果或衔接到下游"（量化指标 / 章节衔接）
+- 每节 3–6 段，每段 3–6 句；避免过长段落
+- 不逐一罗列代码符号；不直贴 API 名；不展开实现细节超过两行
+- 公式只在必要处给出（HGT 注意力、HGT 节点更新、婚姻评分、损失、双半径标号、关系图卷积、最终评分），其余只用文字描述
+- 尽量减少表格层数；超过三层嵌套的表格改为段落式叙述
+- 中英文混排时，英文专有名词括注一次后即弃用；不出现 `\texttt{...}` 包裹的英文 token（公式内或算法伪代码内除外）
+
+
