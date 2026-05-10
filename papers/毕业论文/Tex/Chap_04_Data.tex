@@ -1,0 +1,61 @@
+\chapter{数据集与异构图建模}\label{chap:data}
+
+本章交代实验所依托的史料底本与图建模方案：先介绍中国多代人口面板数据集（China Multi-Generational Panel Dataset，CMGPD-LN）的子表与规模，再说明从原始 \texttt{.rda} 二进制档到张量缓存的清洗流水线，随后形式化定义异构图 \(G=(V,E,\mathcal{T},\mathcal{R})\) 的节点与九类边，最后给出阻断未来泄漏的时间因果子图与父系镜像消融两项约束\citep{fey2019pyg,paszke2019pytorch}。
+
+\section{CMGPD-LN 数据集}\label{sec:data-cmgpd}
+
+CMGPD-LN 是基于辽宁地区清代户籍档案整理的纵向人口面板，由 ICPSR 编号 27063 与 21766 两套分发包公开\citep{campbell2011data,zhao2001chinese}。本研究使用其中三个子表：DS0001 为人年级主表，记录每位个体在普查年的婚姻状况、世代、家户编号、八旗归属及官职、品阶、俸禄等字段；DS0009 为同区域粮价月报，按年聚合用于刻画粮价波动；DS0011 为灾害记录，按年聚合得到灾害发生频次。
+
+主表覆盖 1749—1909 年八个普查年共计约 1{,}513{,}357 条人年观测，对应约 266{,}091 个唯一个体，可识别的婚姻边约 85{,}538 条。除人口学基础字段外，CMGPD-LN 完整保留父系亲属、母系亲属、共居家户、所在村落与所在八旗等多层级结构信息。地方衙门按男性当家人组织条目，"妻子"栏往往只录姓而无名，需要专门规则才能恢复跨家户的婚姻链。
+
+\section{数据获取与清洗}\label{sec:data-pipeline}
+
+ICPSR 分发的 DS0001 采用 R 二进制格式 \texttt{.rda}，规模超出 \texttt{pyreadr} 的可处理上限。为此本研究在数据流水线第 0 阶段调用 \texttt{Rscript} 将主表导出为 gzip 压缩的 CSV，再由 \texttt{pandas} 读入并落盘为 parquet 以加速重复加载。规模较小的 DS0009 与 DS0011 表则直接经 \texttt{pyreadr} 读入。三张表统一以年份对齐到队列年（cohort year）维度，缺失值按 ICPSR 公约（$\{-1,-2,-3,-4,-9,-99,\text{NA}\}$）替换为 NaN 并以掩码方式参与张量化。主表中 \texttt{PERSON\_ID}、\texttt{FATHER\_ID}、\texttt{MOTHER\_ID}、\texttt{HOUSEHOLD\_ID} 等字段存在多种字符串格式，加载阶段统一规范化为不带尾零的字符串，再为四类节点分别构造连续整型 ID 映射。CMGPD 原始 \texttt{SEX} 字段以 1 表示女性、2 表示男性，本研究全程保留该编码以避免与既有文献交叉引用时的歧义。
+
+\section{异构图形式化}\label{sec:graph-formal}
+
+形式化地，构造异构图 \(G=(V,E,\mathcal{T},\mathcal{R})\)，其中 \(V\) 为节点集合，\(E\subseteq V\times\mathcal{R}\times V\) 为带类型的有向边集合，\(\mathcal{T}\) 与 \(\mathcal{R}\) 分别为节点类型集合与边类型集合\citep{hu2020hgt}。本研究取节点类型集
+\[
+\mathcal{T}=\{\text{person},\text{household},\text{community},\text{banner}\},
+\]
+对应"个体—家户—村落—八旗"四级层次。边类型集合 \(\mathcal{R}\) 共九类，按语义可归为亲属、共居与婚姻三组：父系亲属 \(r_{fs}\)（父→子）、\(r_{fd}\)（父→女）；母系亲属 \(r_{ms}\)（母→子）、\(r_{md}\)（母→女）；共父同胞 \(r_{sib}\)；共居与隶属 \(r_{hh}\)（人→家户）、\(r_{hc}\)（家户→村落）、\(r_{cb}\)（人→八旗）；婚姻关系为带时间戳的 \(r_{hw}\)，方向规定为夫指向妻，时间戳 \(\mathit{edge\_time}\) 为推断得到的成婚年份。亲属边的时间戳取作为子女出生年的 \texttt{BIRTHYEAR}；\(r_{hh}\) 取该年观测的 \texttt{YEAR}；村落与八旗等空间隶属边视为静态边，时间戳取 0。九类边的完整登记见表\ref{tab:edge-types}。
+
+\begin{table}[h]
+\centering
+\caption{异构图的九类边类型登记。时间戳列中"是"代表该类边携带逐边时间戳，"否（静态）"代表全部边时间戳取 0 而在任意年份子图中均保留。}
+\label{tab:edge-types}
+\begin{tabular}{llll}
+\hline
+名称 & 起止节点类型 & 语义 & 时间戳 \\
+\hline
+$r_{hw}$ & person $\to$ person & 婚姻边，夫指向妻 & 是（成婚年） \\
+$r_{fs}$ & person $\to$ person & 父亲指向儿子 & 是（子女出生年） \\
+$r_{fd}$ & person $\to$ person & 父亲指向女儿 & 是（子女出生年） \\
+$r_{ms}$ & person $\to$ person & 母亲指向儿子 & 是（子女出生年） \\
+$r_{md}$ & person $\to$ person & 母亲指向女儿 & 是（子女出生年） \\
+$r_{sib}$ & person $\to$ person & 共父同胞，双向连接 & 是（较晚出生年） \\
+$r_{hh}$ & person $\to$ household & 个体当年所在家户 & 是（观测年） \\
+$r_{hc}$ & household $\to$ community & 家户所在村落 & 否（静态） \\
+$r_{cb}$ & person $\to$ banner & 个体所属八旗 & 否（静态） \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{婚姻边时间因果子图}\label{sec:temporal-subgraph}
+
+异构图 \(G\) 是面板期内全部观测信息的叠加，若直接送入图神经网络做链路预测，会让早年队列的婚姻边经过晚年才出现的边间接获得未来信息。为消除此类泄漏，本研究为每个目标年 \(t\) 构造时间因果子图：
+\begin{equation}
+G_t = \bigl(V,\ \{e\in E : \mathit{edge\_time}(e) < t\},\ \mathcal{T},\ \mathcal{R}\bigr).
+\label{eq:subgraph}
+\end{equation}
+即在不改变节点集合与类型集合的前提下，只保留发生时间严格早于 \(t\) 的有向边。记 \(\mathit{edge\_time}(e)=0\) 的边为静态边，例如家户—村落归属 \(r_{hc}\) 与个体—八旗归属 \(r_{cb}\)；对任意 \(t\ge 1\)，由 \(0<t\) 恒成立可知静态边在所有时间因果子图中始终保留，保证空间结构完整。除式\eqref{eq:subgraph} 之外，训练时还在消息传递图中额外移除当前队列年的目标对以及验证集、测试集的全部正样本对。
+
+\section{父系镜像消融}\label{sec:ablation}
+
+CMGPD-LN 完整保留母系亲属字段，但本研究真正面向的应用场景是田野家谱：后者多为父系单线编纂，母系记录与跨宗族婚姻边在文献层面系统性缺失\citep{zhao2001chinese}。为在受控实验下镜像这一父系偏向，本研究对 CMGPD-LN 实施"父系镜像消融"：对边类型 \(r\in\{r_{ms},r_{md}\}\)，在保留键于元数据快照 \(\mathcal{R}\) 中的前提下，将其 \texttt{edge\_index} 与 \texttt{edge\_time} 张量替换为形状为 \((2,0)\) 与 \((0,)\) 的空张量：
+\[
+\forall\,r\in\{r_{ms},r_{md}\}:\ E_r\leftarrow\varnothing,\quad r\in\mathcal{R}.
+\]
+对当前目标年 \(t\) 的婚姻边 \(r_{hw}\)，则按 \S\ref{sec:temporal-subgraph} 在每次前向时再行掩除。
+
+之所以坚持"消融而不删除"，原因在于 HGT 在初始化阶段会按元数据快照 \(\mathcal{R}\) 为每条关系注册独立的线性投影矩阵，作为按关系区分的注意力与消息变换\citep{hu2020hgt}。若在运行期把某关系从 \(\mathcal{R}\) 中移除，与之绑定的投影权重便会与图结构错位，引发张量形状不匹配，使训练好的检查点失效。保留键、置空索引只让该关系在前向计算中传递空消息而不参与聚合，既等价于物理删除该类边的全部信号，又规避元数据漂移。这一约束贯穿训练与评估：消融训练得到的检查点必须配合相同消融的图使用，未消融训练的检查点则配合未消融的图使用，二者对照即可量化母系信号对预测能力的边际贡献。
