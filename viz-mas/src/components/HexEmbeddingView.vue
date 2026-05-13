@@ -3,14 +3,11 @@
     <div class="panel-head">
       <span>V3 · Relation Embedding Space</span>
       <span class="legend-row">
-        <!-- Both modes share the diverging score-gap palette (red → cream
-             → green) and the same canonical packing, so one legend covers
-             both. -->
-        <span class="score-legend tiny">
+        <span class="score-legend tiny" title="ψ(m,w_true) − ψ(m,w_best_neg) for positives; ψ(m,w_neg) − ψ(m,w_true) for hard-negs. Anchors saturate at ±2 logits.">
           <span class="lbl">score gap</span>
-          <span class="tick">−1</span>
+          <span class="tick">−2</span>
           <span class="ramp gap-ramp"></span>
-          <span class="tick">+1</span>
+          <span class="tick">+2</span>
         </span>
         <span class="score-legend tiny" title="Background heatmap = training-cohort density">
           <span class="lbl">train ref</span>
@@ -21,8 +18,8 @@
       <button class="mode-btn" @click="cycleMode" :title="`mode: ${mode}`">
         {{ modeLabel }}
       </button>
-      <label class="topk-ctl tiny" v-if="mode === 'scatter'"
-             title="Pairs per husband (1 = best-scoring; higher exposes hard negatives)">
+      <label class="topk-ctl tiny" v-if="mode !== 'honeycomb'"
+             title="Pairs per husband for the dot layer (1 = best-scoring; higher exposes hard negatives)">
         K
         <select v-model.number="topK" @change="redraw">
           <option :value="1">1</option>
@@ -31,7 +28,7 @@
           <option :value="8">8</option>
         </select>
       </label>
-      <button v-if="mode === 'scatter'"
+      <button v-if="mode !== 'honeycomb'"
         class="mode-btn lasso-btn"
         :class="{ on: lassoOn }"
         @click="toggleLasso"
@@ -50,14 +47,9 @@
 <script setup>
 import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
 import * as d3 from 'd3'
-import { hexPath } from '../utils/hex.js'
 import { getEmbedding } from '../api/client.js'
 import bus from '../utils/eventbus.js'
 
-// Canonical (verbatim) hex algorithm from D:/projects/VIS_2026/NEW/viz/js/.
-// These two modules implement the iterative inward-attraction packing,
-// the diverging score-gap fill (#993c1d → #f5f1e8 → #0f6e56), the cluster
-// borders, and the outlier stripe overlay. Used only for `mode === 'honeycomb'`.
 import { buildHoneycomb } from '../canonical/cluster_layout.js'
 import { renderHoneycomb } from '../canonical/honeycomb_render.js'
 
@@ -68,21 +60,27 @@ const error = ref(null)
 
 const appState = inject('appState')
 
-// 2 modes:
-//   'honeycomb' — verbatim viz/ algorithm. Cluster-packed cells, score-gap
-//                 diverging fill, cluster borders, outlier stripes. Click
-//                 a hex → V4/V5.
-//   'scatter'   — raw MDS dots over X-means + density-contour background;
-//                 supports lasso for multi-point selection.
-const MODES = ['honeycomb', 'scatter']
+// 3 modes:
+//   'honeycomb' — canonical packed cells, score-gap diverging fill,
+//                 cluster borders, outlier stripes. Click hex → V4/V5.
+//   'scatter'   — one dot per pair at its RAW (normalised) mds_coords.
+//                 The model's actual learned 2-D embedding.
+//   'mixed'     — translucent hexes + dots positioned at packer cells.
+//                 Both layers visually coincide so the aggregate matches
+//                 the per-pair detail.
+const MODES = ['honeycomb', 'scatter', 'mixed']
 const mode = ref('honeycomb')
 const modeLabel = computed(() =>
-  mode.value === 'honeycomb' ? '⬢ honeycomb' : '• scatter'
+  mode.value === 'honeycomb' ? '⬢ honeycomb'
+  : mode.value === 'scatter' ? '• scatter'
+  : '⬢• mixed'
 )
 const hint = computed(() =>
   mode.value === 'honeycomb'
     ? 'click a hex; cluster borders mark cluster boundaries'
-    : 'X-means + density contour · click a point · drag-lasso for multi-select'
+    : mode.value === 'scatter'
+    ? 'raw MDS embedding · click a dot · drag-lasso for multi-select'
+    : 'mixed: translucent hex aggregate + raw dots on top'
 )
 function cycleMode() {
   mode.value = MODES[(MODES.indexOf(mode.value) + 1) % MODES.length]
@@ -92,13 +90,11 @@ function cycleMode() {
 const lassoOn = ref(false)
 function toggleLasso() {
   lassoOn.value = !lassoOn.value
-  if (lassoOn.value) mode.value = 'scatter'
+  if (lassoOn.value && mode.value === 'honeycomb') mode.value = 'scatter'
   draw()
 }
 
 const topK = ref(3)
-
-// (stroke palette inlined where used; clusterPalette removed with X-means)
 
 let data = null
 let selected = ref(null)
@@ -123,37 +119,28 @@ async function load() {
 function redraw() { draw() }
 
 // ──────────────────────────────────────────────────────────────────────
-// Mode dispatch
+// Coordinate-system helpers
 // ──────────────────────────────────────────────────────────────────────
-//
-// Both modes share the same coordinate system. The canonical packing
-// algorithm (`buildHoneycomb`) normalizes `mds_coords` to [0,1]² internally
-// using the cohort's own min/max, so for the heatmap to align we must
-// pre-normalize `train_ref_coords` with the same min/max.
-function buildSharedLayout() {
-  // Run the canonical packing once. Both modes consume `cells` for cell-
-  // assignment lookup.
-  const layout = buildHoneycomb({
-    pairs: data.pairs,
-    mds_coords: data.mds_coords,
-    clusters: data.clusters,
-    k_clusters: data.k_clusters,
-  })
-  // Compute the same min/max the canonical algorithm used so we can
-  // normalize the training-reference coords into the same [0,1]² space.
-  let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity
-  for (const c of data.mds_coords) {
-    if (c[0] < xMin) xMin = c[0]; if (c[0] > xMax) xMax = c[0]
-    if (c[1] < yMin) yMin = c[1]; if (c[1] > yMax) yMax = c[1]
-  }
-  const xRange = (xMax - xMin) || 1
-  const yRange = (yMax - yMin) || 1
-  const refRaw = data.train_ref_coords || []
-  const refNorm = refRaw.map(([x, y]) => [
-    (x - xMin) / xRange,
-    (y - yMin) / yRange,
+// MDS routinely produces a few extreme outliers (1–5% of points) that
+// stretch min/max by 3–5×, compressing 90% of pairs into ~6% of the
+// visual area. Using 2nd–98th percentile bounds keeps 96% of pairs
+// fully visible and pins the 4% extreme outliers at the canvas edge.
+function getNormBoundsPercentile(pLo = 2, pHi = 98) {
+  const mds = data.mds_coords || []
+  if (!mds.length) return { xMin: 0, xMax: 1, yMin: 0, yMax: 1, xRange: 1, yRange: 1 }
+  const xs = mds.map(c => c[0]).slice().sort((a, b) => a - b)
+  const ys = mds.map(c => c[1]).slice().sort((a, b) => a - b)
+  const pct = (arr, p) => arr[Math.max(0, Math.min(arr.length - 1, Math.round((arr.length - 1) * p / 100)))]
+  const xMin = pct(xs, pLo), xMax = pct(xs, pHi)
+  const yMin = pct(ys, pLo), yMax = pct(ys, pHi)
+  return { xMin, xMax, yMin, yMax, xRange: (xMax - xMin) || 1, yRange: (yMax - yMin) || 1 }
+}
+
+function normalizeRef(refRaw, b) {
+  return (refRaw || []).map(([x, y]) => [
+    Math.max(0, Math.min(1, (x - b.xMin) / b.xRange)),
+    Math.max(0, Math.min(1, (y - b.yMin) / b.yRange)),
   ])
-  return { layout, refNorm }
 }
 
 function draw() {
@@ -165,32 +152,96 @@ function draw() {
   while (svg.firstChild) svg.removeChild(svg.firstChild)
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`)
 
-  const { layout, refNorm } = buildSharedLayout()
+  // Percentile bounds — cluster_layout.js also uses percentile bounds
+  // internally so heatmap, scatter dots, and hex cells share one frame.
+  const bounds = getNormBoundsPercentile(2, 98)
+  const refNorm = normalizeRef(data.train_ref_coords, bounds)
+  const showHex = (mode.value === 'honeycomb' || mode.value === 'mixed')
+  const showDots = (mode.value === 'scatter' || mode.value === 'mixed')
 
-  // 1) Foreground (mode-specific). Honeycomb mode internally clears the
-  //    SVG, so we have to render it BEFORE the heatmap, then prepend the
-  //    heatmap layer to put it visually behind everything else.
-  if (mode.value === 'honeycomb') drawHoneycomb(svg, layout, W, H)
-  else drawScatter(svg, layout, W, H)
+  // Build the canonical layout once if either layer needs it.
+  let layout = null
+  if (showHex || mode.value === 'mixed') {
+    layout = buildHoneycomb({
+      pairs: data.pairs,
+      mds_coords: data.mds_coords,
+      clusters: data.clusters,
+      k_clusters: data.k_clusters,
+    })
+  }
 
-  // 2) Heatmap layer — appended then re-positioned to the bottom of the
-  //    SVG child list so it sits behind cells / dots / cluster borders.
+  if (showHex) {
+    drawHoneycomb(svg, layout, W, H)
+    if (mode.value === 'mixed') dimHexLayer(svg)
+  }
+
+  if (showDots) {
+    if (mode.value === 'mixed') drawScatterAligned(svg, layout, W, H)
+    else drawScatterRaw(svg, bounds, W, H)
+  }
+
+  // Heatmap layer — appended then re-positioned to the bottom of the
+  // SVG child list so it sits behind cells / dots / cluster borders.
   drawTrainRefHeatmap(svg, refNorm, W, H)
   const heatmap = svg.querySelector('.train-ref-heatmap')
   if (heatmap && svg.firstChild && svg.firstChild !== heatmap) {
     svg.insertBefore(heatmap, svg.firstChild)
   }
+
+  // Re-apply cell highlight after every redraw — the canonical renderer
+  // rebuilds <polygon class="hex-cell"> from scratch, wiping any inline
+  // opacity we set last time.
+  applyCellHighlight()
 }
 
-// ──────────────────────────────────────────────────────────────────────
-// Honeycomb mode — wraps the canonical algorithm
-// ──────────────────────────────────────────────────────────────────────
+// In mixed mode the hex aggregate reads as a backdrop; dots dominate.
+// Drop hex fill alpha + soften cluster borders so dots pop.
+function dimHexLayer(svg) {
+  const cells = svg.querySelectorAll('polygon.hex-cell')
+  cells.forEach(c => { c.style.fillOpacity = '0.55' })
+  const borders = svg.querySelector('g.cluster-borders')
+  if (borders) borders.style.opacity = '0.5'
+  const stripes = svg.querySelector('g.hex-stripes')
+  if (stripes) stripes.style.opacity = '0.5'
+}
+
+// Highlight the selected cell in hex-bearing modes by dimming all OTHER
+// cells. No-op when nothing is selected or in pure scatter mode.
+function applyCellHighlight() {
+  const svg = svgRef.value
+  if (!svg) return
+  const cells = svg.querySelectorAll('polygon.hex-cell')
+  const hexModeActive = mode.value === 'honeycomb' || mode.value === 'mixed'
+  const isCellSel = hexModeActive
+                    && selected.value?.kind === 'cell'
+                    && selected.value.id != null
+  cells.forEach(c => {
+    if (!isCellSel) {
+      c.style.opacity = ''
+      c.style.stroke = ''
+      c.style.strokeWidth = ''
+      return
+    }
+    if (String(c.getAttribute('data-cell-id')) === String(selected.value.id)) {
+      c.style.opacity = '1'
+      c.style.stroke = '#1a1a1a'
+      c.style.strokeWidth = '1.8'
+    } else {
+      c.style.opacity = '0.18'
+      c.style.stroke = ''
+      c.style.strokeWidth = ''
+    }
+  })
+  const borders = svg.querySelector('g.cluster-borders')
+  const stripes = svg.querySelector('g.hex-stripes')
+  for (const g of [borders, stripes]) {
+    if (g) g.style.opacity = isCellSel ? '0.25' : ''
+  }
+}
+
 // Shared coordinate transform — must match the canonical renderer
-// (honeycomb_render.js) so all three layers (heatmap, scatter dots, hex
-// cells) live in the same pixel space. The renderer uses
-//   scale = min(innerW, innerH); offsetX = marginPx + (innerW - scale)/2;
-//   offsetY = marginPx + (innerH - scale)/2;
-// ...so layout coords in [0,1]² → a square inscribed in the SVG.
+// so all three layers (heatmap, scatter dots, hex cells) share one
+// pixel space.
 const MARGIN_PX = 40
 function pxTransform(W, H) {
   const innerW = W - 2 * MARGIN_PX
@@ -201,28 +252,20 @@ function pxTransform(W, H) {
   return {
     x: (cx) => offsetX + cx * scale,
     y: (cy) => offsetY + cy * scale,
-    scale,
-    offsetX,
-    offsetY,
+    scale, offsetX, offsetY,
   }
 }
 
-// Heatmap of training-reference relations — drawn first so cells/dots
-// overlay on top. Empty when train_ref_coords is missing or empty.
 function drawTrainRefHeatmap(svg, refNorm, W, H) {
   if (!refNorm || refNorm.length < 5) return
   const t = pxTransform(W, H)
   const screen = refNorm.map(([cx, cy]) => [t.x(cx), t.y(cy)])
-  const innerW = W - 2 * MARGIN_PX
-  const innerH = H - 2 * MARGIN_PX
   const contours = d3.contourDensity()
     .x(p => p[0]).y(p => p[1])
     .size([W, H])
     .bandwidth(20)
     .thresholds(8)(screen)
   const cMax = d3.max(contours, c => c.value) || 1
-  // Cool sand → warm amber so the layer reads as background but still
-  // signals where the training-cohort density is concentrated.
   const cScale = d3.scaleSequential(
     d3.interpolateRgb('#f1ecdf', '#d4a85d')
   ).domain([0, cMax])
@@ -242,55 +285,64 @@ function drawTrainRefHeatmap(svg, refNorm, W, H) {
   svg.appendChild(g)
 }
 
-// Honeycomb mode — defers entirely to the canonical renderer.
 function drawHoneycomb(svg, layout, W, H) {
   const opts = { width: W, height: H, marginPx: MARGIN_PX }
   renderHoneycomb(svg, layout, opts)
-  // Listeners attached once in onMounted; canonical SVG dispatches
-  // cell-clicked / cell-hovered with the full cell record.
 }
 
 function onCanonicalCellClick(ev) {
-  // Only respond when honeycomb mode is active and we have data.
-  if (mode.value !== 'honeycomb' || !data) return
+  // Respond when ANY hex layer is active (honeycomb or mixed).
+  if (mode.value === 'scatter' || !data) return
   const cell = ev.detail || {}
   const pairIds = cell.pairIds || []
   const pairs = pairIds.map(i => pairPayload(data.pairs[i], i)).filter(Boolean)
   if (!pairs.length) {
-    // Empty cell click — clear selection downstream
     bus.emit('hex-clear')
     selected.value = null
+    applyCellHighlight()
     return
   }
   bus.emit('hex-select', { binKey: `cell:${cell.id}`, pairs })
   selected.value = { kind: 'cell', id: cell.id }
+  applyCellHighlight()
 }
-function onCanonicalCellHover(_ev) {
-  // Hover not yet wired into linked highlights.
-}
+function onCanonicalCellHover(_ev) { /* not wired into linked highlights */ }
 
 // ──────────────────────────────────────────────────────────────────────
-// Scatter mode — same canonical packing as honeycomb (one position per
-// pair, derived from `layout.cells[k].pairIds`), just rendered as dots
-// instead of an aggregated hex glyph. Multi-pair cells get an
-// in-hex-radius jitter so dots don't perfectly stack.
+// Two scatter shapers
+//   shapeRawScatter   → raw normalised mds_coords[i]. Used in pure
+//                       'scatter' mode where the user wants to see the
+//                       embedding the model actually learned.
+//   shapeCellScatter  → packer cell positions + jitter. Used in 'mixed'
+//                       mode so dots sit inside their hex cells.
 // ──────────────────────────────────────────────────────────────────────
 function _hashJitter(seed, idx, scale = 0.6) {
-  // Tiny deterministic in-cell jitter so reloads don't reshuffle dots.
-  // Two coprime LCG-style steps on (seed, idx).
   const a = ((seed * 1103515245 + idx * 12345) >>> 0) / 0xffffffff
   const b = ((seed * 1664525 + idx * 1013904223) >>> 0) / 0xffffffff
   const ang = a * Math.PI * 2
-  const r = Math.sqrt(b) * scale       // sqrt for area-uniform jitter
+  const r = Math.sqrt(b) * scale
   return [Math.cos(ang) * r, Math.sin(ang) * r]
 }
 
+function _topKPerHusband(out) {
+  if (topK.value >= out.length) return out
+  const byMale = new Map()
+  for (const p of out) {
+    if (!byMale.has(p.male_idx)) byMale.set(p.male_idx, [])
+    byMale.get(p.male_idx).push(p)
+  }
+  const trimmed = []
+  for (const arr of byMale.values()) {
+    arr.sort((a, b) => b.raw_score - a.raw_score)
+    trimmed.push(...arr.slice(0, topK.value))
+  }
+  return trimmed
+}
+
 function shapeCellScatter(layout) {
-  // For each populated cell, emit one point per pair at the cell's
-  // canonical centroid + small in-hex jitter. Top-K filter applies per
-  // husband AFTER cell assignment so we keep the alignment honest.
   const out = []
   const cells = layout?.cells || []
+  const hexR = layout?.meta?.hexRadius ?? 0.04
   for (const cell of cells) {
     const ids = cell.pairIds || []
     if (!ids.length) continue
@@ -299,13 +351,9 @@ function shapeCellScatter(layout) {
       const p = data.pairs[pid]
       if (!p) { i++; continue }
       if (acceptedSet.value.has(`${p.husband_id}|${p.wife_id}`)) { i++; continue }
-      // Jitter scale = 0.6 of the hex radius (cluster_layout default 0.04).
-      const [jx, jy] = ids.length > 1
-        ? _hashJitter(cell.id, i, (layout.meta?.hexRadius ?? 0.04) * 0.6)
-        : [0, 0]
+      const [jx, jy] = ids.length > 1 ? _hashJitter(cell.id, i, hexR * 0.6) : [0, 0]
       out.push({
         id: pid,
-        cellId: cell.id,
         x: cell.cx + jx,
         y: cell.cy + jy,
         score_gap: p.score_gap,
@@ -324,38 +372,48 @@ function shapeCellScatter(layout) {
       i++
     }
   }
-  // Top-K per husband, by raw score.
-  if (topK.value >= out.length) return out
-  const byMale = new Map()
-  for (const p of out) {
-    if (!byMale.has(p.male_idx)) byMale.set(p.male_idx, [])
-    byMale.get(p.male_idx).push(p)
-  }
-  const trimmed = []
-  for (const arr of byMale.values()) {
-    arr.sort((a, b) => b.raw_score - a.raw_score)
-    trimmed.push(...arr.slice(0, topK.value))
-  }
-  return trimmed
+  return _topKPerHusband(out)
 }
 
-// Diverging score-gap palette — same anchors as honeycomb_render.js.
+function shapeRawScatter(bounds) {
+  const out = []
+  const mds = data.mds_coords || []
+  const pairs = data.pairs || []
+  for (let i = 0; i < pairs.length; i++) {
+    const p = pairs[i]
+    if (!p) continue
+    if (acceptedSet.value.has(`${p.husband_id}|${p.wife_id}`)) continue
+    const c = mds[i] || [(bounds.xMin + bounds.xMax) / 2, (bounds.yMin + bounds.yMax) / 2]
+    out.push({
+      id: i,
+      x: Math.max(0, Math.min(1, (c[0] - bounds.xMin) / bounds.xRange)),
+      y: Math.max(0, Math.min(1, (c[1] - bounds.yMin) / bounds.yRange)),
+      score_gap: p.score_gap,
+      raw_score: p.score,
+      score: 1 / (1 + Math.exp(-p.score)),
+      label: p.label,
+      pair_type: p.label === 1 ? 'gt' : 'pred',
+      hungarian_correct: p.hungarian_correct,
+      male_idx: p.husband_id,
+      female_idx: p.wife_id,
+      same_lineage: p.same_lineage,
+      era: p.era,
+      patri_path_count: p.patri_path_count,
+      cluster: data?.clusters?.[i],
+    })
+  }
+  return _topKPerHusband(out)
+}
+
+// Diverging score-gap palette — anchors at ±2 (raw HGT logit-gap units).
 function gapColor(g) {
-  // Clamp to [-1, +1] for the linear interpolation.
-  const v = Math.max(-1, Math.min(1, g ?? 0))
-  if (v <= 0) {
-    // -1..0  →  #993c1d → #f5f1e8
-    return d3.interpolateRgb('#993c1d', '#f5f1e8')(v + 1)
-  }
-  // 0..+1  →  #f5f1e8 → #0f6e56
-  return d3.interpolateRgb('#f5f1e8', '#0f6e56')(v)
+  const v = Math.max(-2, Math.min(2, g ?? 0))
+  if (v <= 0) return d3.interpolateRgb('#993c1d', '#f5f1e8')((v + 2) / 2)
+  return d3.interpolateRgb('#f5f1e8', '#0f6e56')(v / 2)
 }
 
-function drawScatter(svg, layout, W, H) {
+function _renderDots(svg, points, W, H) {
   const t = pxTransform(W, H)
-  const points = shapeCellScatter(layout)
-  // Use a top-level <g> in the same coordinate system as the canonical
-  // renderer so the lasso, dots, and (later-prepended) heatmap all line up.
   const root = d3.select(svg).append('g').attr('class', 'scatter')
   root.selectAll('circle').data(points).enter().append('circle')
     .attr('cx', p => t.x(p.x)).attr('cy', p => t.y(p.y))
@@ -376,13 +434,17 @@ function drawScatter(svg, layout, W, H) {
         pairs: [pairPayload(data.pairs[p.id], p.id)],
       })
     })
-
   if (lassoOn.value) attachLasso(root, t, W, H, points)
 }
 
+function drawScatterRaw(svg, bounds, W, H) {
+  _renderDots(svg, shapeRawScatter(bounds), W, H)
+}
+function drawScatterAligned(svg, layout, W, H) {
+  _renderDots(svg, shapeCellScatter(layout), W, H)
+}
+
 function attachLasso(root, t, W, H, points) {
-  // Brush operates in pixel coordinates over the full SVG; we filter
-  // points by their pixel position via the same `t` transform.
   const brush = d3.brush()
     .extent([[0, 0], [W, H]])
     .on('end', (event) => {
@@ -403,16 +465,6 @@ function attachLasso(root, t, W, H, points) {
   lg.selectAll('.overlay').attr('fill-opacity', 0)
 }
 
-// ──────────────────────────────────────────────────────────────────────
-// Shared helpers
-// ──────────────────────────────────────────────────────────────────────
-//
-// Note: the on-the-fly X-means / convex hulls used in the previous scatter
-// implementation are gone. Both modes now use the canonical packing's
-// cluster assignment (cohort.clusters), which is what `cluster_layout.js`
-// reads to colour cells and route cluster borders. Keeping a second
-// clustering on top would be redundant and would drift away from the
-// honeycomb mode's borders, breaking the visual alignment.
 function pairPayload(p, idx) {
   if (!p) return null
   return {
@@ -432,16 +484,12 @@ function pairPayload(p, idx) {
 }
 
 function onCanvasClick(event) {
-  // Background-click → clear selection. Cell clicks bubble up to here
-  // too (the canonical renderer doesn't stopPropagation), so we have to
-  // distinguish between the SVG itself and a child element. Treat any
-  // click whose target is a child polygon/path/g as a "real" cell hit
-  // and leave the selection alone.
   const t = event && event.target
   if (t && t !== svgRef.value) return
   if (selected.value) {
     selected.value = null
     bus.emit('hex-clear')
+    applyCellHighlight()
   }
 }
 
@@ -453,13 +501,18 @@ function onAccepted(evt) {
   draw()
 }
 
+function onExternalClear() {
+  if (selected.value) {
+    selected.value = null
+    applyCellHighlight()
+  }
+}
+
 onMounted(() => {
   load()
   window.addEventListener('resize', resizeHandler)
   bus.on('match-accepted', onAccepted)
-  // Attach the canonical cell-click / cell-hover listeners on the SVG
-  // ONCE. drawHoneycomb wipes child elements but never replaces svgRef
-  // itself, so a single bind here survives every redraw.
+  bus.on('hex-clear', onExternalClear)
   if (svgRef.value) {
     svgRef.value.addEventListener('cell-clicked', onCanonicalCellClick)
     svgRef.value.addEventListener('cell-hovered', onCanonicalCellHover)
@@ -468,6 +521,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('resize', resizeHandler)
   bus.off('match-accepted', onAccepted)
+  bus.off('hex-clear', onExternalClear)
   if (svgRef.value) {
     svgRef.value.removeEventListener('cell-clicked', onCanonicalCellClick)
     svgRef.value.removeEventListener('cell-hovered', onCanonicalCellHover)

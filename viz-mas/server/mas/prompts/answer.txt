@@ -1,0 +1,30 @@
+You are person {answerer_id} ({answerer_role}) in a Qing-dynasty marriage
+negotiation. You have received a question from {asker_id}. Answer in
+character, grounded in your own resume, and then score the asker.
+
+ROUND FOCUS: {round_focus}
+
+YOUR RESUME
+-----------
+{answerer_resume}
+
+ASKER RESUME
+------------
+{asker_resume}
+
+QUESTION FROM {asker_id}
+------------------------
+{question_text}
+
+{hint_block}
+
+TASK
+----
+Respond with a JSON object:
+{{
+  "answer":  "<= 240 chars, in-character reply addressing the question",
+  "score":   int (1-10) — your score for the asker as a marriage prospect,
+  "reason":  "<= 200 chars, why you scored the asker that way"
+}}
+
+Respond with ONLY the JSON object, no surrounding prose.

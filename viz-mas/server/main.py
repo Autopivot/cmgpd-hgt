@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import (
-    BackgroundTasks, FastAPI, HTTPException,
+    BackgroundTasks, FastAPI, HTTPException, Query,
     WebSocket, WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
@@ -50,9 +50,21 @@ from pydantic import BaseModel
 # Multi-Agent System (MAS) modules — per-person LLM negotiation,
 # WebSocket fan-out, hint storage, accepted-match log.
 from .mas import agent as mas_agent
-from .mas.negotiator import negotiate as mas_negotiate
+from .mas.profiles import get_profile as mas_get_profile
+# The single-shot negotiator is REMOVED with the V5 6-round refactor. The
+# import is kept commented for one merge cycle so reviewers can see the
+# replacement; delete after unit 5 lands.
+# from .mas.negotiator import negotiate as mas_negotiate  # noqa: ERA001
+from .mas.negotiator_rounds import mas_negotiate_rounds
 from .mas.state import state as mas_state
 from .mas.ws_broker import broker as mas_broker
+
+# DS0003 life-event + income loader (V5 narrative grounding for persona agents).
+# Imported at module top so tests can monkey-patch
+# `server.main.load_events` / `load_income` / `get_birth_year` directly.
+from .data.events_loader import (
+    get_birth_year, load_events, load_income,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 # Single canonical data source: D:/projects/VIS_2026/NEW/viz/data/. Both
@@ -211,6 +223,49 @@ async def api_pair(year: int, id: int, ablation: str = "ablated"):
     return c["pairs"][id]
 
 
+@app.get("/api/narrative/{person_id}")
+def api_narrative(person_id: str, year: int = Query(..., ge=1700, le=2000)):
+    """Return a person's life-history timeline up to ``year``.
+
+    Powers the V5 (Agent Arena) per-persona narrative panel: each Qwen
+    agent (husband + each candidate wife) is grounded in the real DS0003
+    event stream and yearly income trace bounded above by the cohort
+    year. The window starts at the person's known birth year if DS0003
+    knows it, else `year - 80` (an upper bound on plausible lifespan)
+    so we still surface anything the loader can find.
+
+    The actual year filtering is performed by the loader; this endpoint
+    only normalises the person id and forwards `start`/`end` to it.
+    Returns 404 when DS0003 has neither events nor income for this id.
+    """
+    birth = get_birth_year(person_id)
+    start = birth if birth is not None else year - 80
+    events = load_events(person_id, start, year)
+    income = load_income(person_id, start, year)
+    if not events and not income:
+        raise HTTPException(status_code=404, detail="person not found")
+    normalized_id = person_id if person_id.startswith("P") else f"P{person_id}"
+    return {
+        "person_id": normalized_id,
+        "birth_year": birth,
+        "events": events,
+        "income": income,
+    }
+
+
+@app.get("/api/profile/{person_id}")
+def api_profile(person_id: str):
+    """Return the cleaned-parquet attributes for one person.
+
+    Backs V4's click-popup (sex / birth / banner / community / household)
+    and seeds V5's husband header before the negotiation streams. Falls
+    back to a {sex:'?', birth_year:None, ...} stub when the parquet is
+    missing or the id is unknown — matching the frontend's offline stub
+    so the UI behaves identically with or without the backend.
+    """
+    return mas_get_profile(person_id)
+
+
 @app.get("/api/shap/{pair_id}")
 async def api_shap(pair_id: int, year: int, ablation: str = "ablated"):
     c = load_cohort(year, ablation)
@@ -244,17 +299,16 @@ async def api_rules_post(body: dict):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# MAS — per-husband multi-agent LLM negotiation
+# MAS — per-husband 6-round bilateral negotiation
 # ──────────────────────────────────────────────────────────────────────
 #
-# Endpoints follow the reference at
-# D:/projects/jiapu-hgt-final/backend/app/routers/negotiate.py.
 # Each husband gets ONE negotiation session at topic
-# `negotiate:{husband_id}`. Inside that session: the husband's LLM
-# agent scores K candidate wives, then each candidate that crosses
-# `BILATERAL_THRESHOLD` runs ITS OWN LLM call to score the husband
-# back. So every person involved gets to "communicate" with the model.
-# Token deltas stream out over the WebSocket so V5 fills in live.
+# `negotiate:{husband_id}`. The orchestrator (mas_negotiate_rounds) runs
+# six rounds — persona load, opening pitches, bilateral scoring, ranking,
+# arbitration, commit — and pauses between them on a per-husband
+# asyncio.Event. The user "advances" rounds via POST /advance and can
+# inject prompts via POST /hint, which land in a per-husband asyncio.Queue
+# the orchestrator drains between rounds.
 
 class _NegotiateStartBody(BaseModel):
     year: int
@@ -262,21 +316,73 @@ class _NegotiateStartBody(BaseModel):
     auto_commit: bool = False
 
 
-@app.post("/api/negotiate/{husband_id}")
-async def api_negotiate_start(
-    husband_id: str, body: _NegotiateStartBody, background: BackgroundTasks,
-):
-    """Kick off a negotiation in the background; the live event stream is at
-    WS /api/negotiate/{husband_id}/stream and the cached final result at
-    GET /api/negotiate/{husband_id}/result.
+async def _run_orchestrator(
+    husband_id: str, year: int, ablation: str, auto_commit: bool,
+) -> None:
+    """Background entrypoint: marks the session active for the duration of
+    the orchestrator run so /advance can answer 404 vs 200 correctly, and
+    forwards any orchestrator exception as an error frame on the WS topic.
     """
     topic = f"negotiate:{husband_id}"
-    mas_broker.reset(topic)   # fresh replay buffer per run
-    background.add_task(
-        mas_negotiate, husband_id, body.year, body.ablation,
-        auto_commit=body.auto_commit,
+
+    async def _publish(event: dict) -> None:
+        await mas_broker.publish(topic, event)
+
+    try:
+        await mas_negotiate_rounds(
+            husband_id, year, ablation,
+            publish=_publish,
+            advance_event=mas_state.get_advance_event(husband_id),
+            hint_queue=mas_state.get_hint_queue(husband_id),
+            auto_commit=auto_commit,
+        )
+    except Exception as e:   # noqa: BLE001
+        log.exception("orchestrator failed for %s: %s", husband_id, e)
+        await mas_broker.publish(topic, {"type": "error", "message": str(e)})
+    finally:
+        mas_state.mark_session_inactive(husband_id)
+
+
+@app.post("/api/negotiate/{husband_id}")
+async def api_negotiate_start(husband_id: str, body: _NegotiateStartBody):
+    """Kick off a 6-round negotiation as a fire-and-forget asyncio task;
+    the live event stream is at WS /api/negotiate/{husband_id}/stream.
+    Pause/resume between rounds via POST /api/negotiate/{husband_id}/advance,
+    and inject directives via POST /api/negotiate/{husband_id}/hint.
+
+    NOTE: we deliberately use ``asyncio.create_task`` rather than
+    FastAPI's ``BackgroundTasks`` because the orchestrator parks on
+    per-round advance Events for an unbounded duration; ``BackgroundTasks``
+    runs after the response but BLOCKS the request lifecycle, which would
+    stall the sync ``TestClient`` (and any client expecting prompt 200).
+    """
+    topic = f"negotiate:{husband_id}"
+    mas_broker.reset(topic)               # fresh replay buffer per run
+    mas_state.reset_session(husband_id)   # clear advance event + hint queue
+    # Mark active synchronously so a /advance hitting microseconds after
+    # this 200 doesn't see "no active session".
+    mas_state.mark_session_active(husband_id)
+    asyncio.create_task(
+        _run_orchestrator(husband_id, body.year, body.ablation, body.auto_commit),
     )
-    return {"status": "started", "husband_id": husband_id, "topic": topic}
+    return {
+        "status": "started",
+        "husband_id": husband_id,
+        "year": body.year,
+        "ablation": body.ablation,
+        "topic": topic,
+    }
+
+
+@app.post("/api/negotiate/{husband_id}/advance")
+async def api_negotiate_advance(husband_id: str):
+    """Signal the orchestrator's per-husband Event so it can leave the
+    current round_paused frame. 404 if no orchestrator is currently
+    running for this husband."""
+    if not mas_state.is_session_active(husband_id):
+        raise HTTPException(404, f"no active negotiation for {husband_id}")
+    mas_state.get_advance_event(husband_id).set()
+    return {"status": "ok"}
 
 
 @app.websocket("/api/negotiate/{husband_id}/stream")
@@ -304,17 +410,26 @@ async def api_negotiate_stream(ws: WebSocket, husband_id: str):
 
 class _HintBody(BaseModel):
     text: str
-    role: str = "all"   # "all" | "target" | "candidates"
+    # 'all' | 'target' | 'candidates' | a candidate id like 'c-12345'.
+    role: str = "all"
+    # Optional 1-indexed round number this hint targets. The orchestrator
+    # uses it to scope when the hint is replayed to agents.
+    round: int | None = None
 
 
 @app.post("/api/negotiate/{husband_id}/hint")
 async def api_negotiate_hint(husband_id: str, body: _HintBody):
+    """Push the hint into the orchestrator's per-husband Queue. The
+    orchestrator drains the queue between rounds and emits its own
+    hint_ack frame, so we no longer publish one here.
+
+    The legacy in-memory hint list is still updated so other code paths
+    (profiles, list/count endpoints) keep working during the transition.
+    """
+    payload = {"text": body.text, "role": body.role, "round": body.round}
+    await mas_state.get_hint_queue(husband_id).put(payload)
     mas_state.add_hint(husband_id, body.text, body.role)
-    await mas_broker.publish(
-        f"negotiate:{husband_id}",
-        {"type": "hint_ack", "role": body.role, "text": body.text},
-    )
-    return {"status": "ok", "n_hints": mas_state.count_hints(husband_id)}
+    return {"status": "ok"}
 
 
 @app.get("/api/negotiate/{husband_id}/hints")

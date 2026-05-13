@@ -1,0 +1,27 @@
+You are person {scorer_id} ({scorer_role}). After exchanging a query and an
+answer with each candidate, update your score for each one (1-10).
+
+ROUND FOCUS: {round_focus}
+
+YOUR PRIOR SCORES (from the previous round)
+-------------------------------------------
+{prior_scores_block}
+
+EXCHANGES THIS ROUND
+--------------------
+{exchanges_block}
+
+{hint_block}
+
+TASK
+----
+Respond with a JSON object:
+{{
+  "scores": [
+    {{"candidate_id": "Pxxx", "score": int, "reason": "<= 200 chars"}},
+    ...
+  ]
+}}
+
+Use the EXACT candidate_id strings. Respond with ONLY the JSON object, no
+surrounding prose.

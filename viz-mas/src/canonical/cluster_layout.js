@@ -30,23 +30,32 @@ export function buildHoneycomb(cohort, opts = {}) {
     const n = pairs.length;
 
     // ---------------------------------------------------------------------
-    // 1. Normalize MDS coordinates to [0,1]^2.
+    // 1. Normalize MDS coordinates to [0,1]^2 using 2nd–98th percentile
+    //    bounds. MDS routinely produces a few extreme outliers that stretch
+    //    min/max by 3–5×, compressing 90% of pairs into a small visual area.
+    //    Percentile clipping keeps the honeycomb coordinate frame consistent
+    //    with HexEmbeddingView's scatter mode (which also uses 2nd–98th
+    //    bounds), so the training-reference heatmap aligns across all modes.
     // ---------------------------------------------------------------------
     const norm = new Array(n);
     if (n > 0) {
-        let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+        const xs = new Array(n), ys = new Array(n);
         for (let i = 0; i < n; i++) {
             const c = mds[i] || [0, 0];
-            if (c[0] < xMin) xMin = c[0];
-            if (c[0] > xMax) xMax = c[0];
-            if (c[1] < yMin) yMin = c[1];
-            if (c[1] > yMax) yMax = c[1];
+            xs[i] = c[0]; ys[i] = c[1];
         }
+        xs.sort((a, b) => a - b); ys.sort((a, b) => a - b);
+        const pct = (arr, p) => arr[Math.max(0, Math.min(arr.length - 1, Math.round((arr.length - 1) * p / 100)))];
+        const xMin = pct(xs, 2), xMax = pct(xs, 98);
+        const yMin = pct(ys, 2), yMax = pct(ys, 98);
         const xRange = (xMax - xMin) || 1;
         const yRange = (yMax - yMin) || 1;
         for (let i = 0; i < n; i++) {
             const c = mds[i] || [0, 0];
-            norm[i] = [(c[0] - xMin) / xRange, (c[1] - yMin) / yRange];
+            norm[i] = [
+                Math.max(0, Math.min(1, (c[0] - xMin) / xRange)),
+                Math.max(0, Math.min(1, (c[1] - yMin) / yRange)),
+            ];
         }
     }
 

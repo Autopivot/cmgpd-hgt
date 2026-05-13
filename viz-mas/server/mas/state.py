@@ -1,6 +1,13 @@
-"""In-memory MAS state: hints injected by the user + accepted matches."""
+"""In-memory MAS state: hints injected by the user + accepted matches.
+
+Also holds the per-husband asyncio primitives (advance Event + hint Queue)
+used by the 6-round bilateral negotiation orchestrator
+(`mas/negotiator_rounds.py`). Those primitives are created lazily on first
+access, so HTTP handlers and the orchestrator both grab the same instance.
+"""
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import defaultdict
 
@@ -14,6 +21,51 @@ class MatchState:
         # Append-only log of all accept events in arrival order. Drives the
         # V1 learning-curve plot (x = cumulative accept count over time).
         self._accept_log: list[dict] = []
+        # 6-round orchestrator plumbing. Both keyed by husband_id and lazily
+        # created on first access so handlers + orchestrator share instances.
+        self._advance_events: dict[str, asyncio.Event] = {}
+        self._hint_queues: dict[str, asyncio.Queue] = {}
+        # husband_id → True while an orchestrator task is live. Lets /advance
+        # respond 404 when the user hits it without a running session.
+        self._active_sessions: dict[str, bool] = {}
+
+    # ── Round-control plumbing (6-round orchestrator) ──────────────────
+    def get_advance_event(self, husband_id: str) -> asyncio.Event:
+        """Returns the asyncio.Event for this husband; creates if missing."""
+        ev = self._advance_events.get(husband_id)
+        if ev is None:
+            ev = asyncio.Event()
+            self._advance_events[husband_id] = ev
+        return ev
+
+    def get_hint_queue(self, husband_id: str) -> asyncio.Queue:
+        """Returns the asyncio.Queue for this husband; creates if missing."""
+        q = self._hint_queues.get(husband_id)
+        if q is None:
+            q = asyncio.Queue()
+            self._hint_queues[husband_id] = q
+        return q
+
+    def reset_session(self, husband_id: str) -> None:
+        """Clears advance event + drains hint queue for a fresh negotiation."""
+        if husband_id in self._advance_events:
+            self._advance_events[husband_id].clear()
+        if husband_id in self._hint_queues:
+            q = self._hint_queues[husband_id]
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+    def mark_session_active(self, husband_id: str) -> None:
+        self._active_sessions[husband_id] = True
+
+    def mark_session_inactive(self, husband_id: str) -> None:
+        self._active_sessions.pop(husband_id, None)
+
+    def is_session_active(self, husband_id: str) -> bool:
+        return bool(self._active_sessions.get(husband_id))
 
     # ── Hints ──────────────────────────────────────────────────────────
     def add_hint(self, husband_id: str, text: str, role: str = "all") -> None:
