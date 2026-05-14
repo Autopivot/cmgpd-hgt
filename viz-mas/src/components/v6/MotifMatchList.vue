@@ -15,25 +15,26 @@
     <div v-else-if="rows.length === 0" class="empty">
       no motifs detected for any candidate
     </div>
-    <div v-else class="rows">
+    <div v-else class="card-grid">
       <div
         v-for="row in rows"
         :key="row.motif.id"
-        class="motif-row"
+        class="motif-card"
+        :title="row.motif.id"
       >
-        <div class="glyph-cell">
-          <MotifMiniGlyph :motif="row.motif" :size="72" />
+        <div class="card-top">
+          <MotifMiniGlyph :motif="row.motif" :size="60" />
           <div class="motif-name">{{ row.motif.name_en || row.motif.id }}</div>
-        </div>
-        <div class="match-cell">
           <div class="match-line">
-            <span class="match-label">matched_by:</span>
+            <span class="match-label">matched:</span>
             <span
               v-for="wid in row.matchedCandidates"
               :key="wid"
               class="chip"
             >{{ wid }}</span>
           </div>
+        </div>
+        <div class="card-bottom">
           <div class="explanation">{{ row.motif.explanation_en || '' }}</div>
         </div>
       </div>
@@ -184,62 +185,64 @@ watch(
   &.error  { color: #993c1d; border-color: #d49b8d; background: #fbeee9; }
   &.loading { color: #555; }
 }
-.rows {
+/* Card grid: auto-fill columns at min 160px, equal width per column.
+ * align-items: stretch keeps every card in a row at the same height as the
+ * tallest card in that row; grid-auto-rows: 1fr forces equal-height rows
+ * across the whole grid. Each card is itself a column flex (top + bottom)
+ * so the explanation expands to fill any leftover vertical space. */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-auto-rows: 1fr;
+  gap: 6px;
+  align-items: stretch;
+}
+.motif-card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-}
-.motif-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-height: 80px;
-  padding: 6px 8px;
   background: #fbf9f3;
   border: 1px solid #e2dccb;
   border-radius: 3px;
+  overflow: hidden;
+  min-height: 0;
 }
-.glyph-cell {
-  flex: 0 0 auto;
+.card-top {
+  padding: 6px 6px 4px 6px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  width: 78px;
+  gap: 3px;
+  border-bottom: 1px dashed #d4c8a3;
+  background: #f6f1e2;
 }
 .motif-name {
-  margin-top: 2px;
-  font-size: 9px;
-  color: #555;
-  text-align: center;
-  line-height: 1.2;
-  word-break: break-word;
-}
-.match-cell {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  font-size: 10px; font-weight: 600;
+  color: #4a3f2a; text-align: center;
+  line-height: 1.2; word-break: break-word;
 }
 .match-line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
+  display: flex; flex-wrap: wrap; justify-content: center;
+  align-items: center; gap: 3px;
+  margin-top: 2px;
 }
 .match-label {
-  color: #666;
-  font-size: 10px;
-  letter-spacing: 0.3px;
+  color: #666; font-size: 9px; letter-spacing: 0.3px;
 }
 .chip {
   display: inline-block;
-  padding: 1px 6px;
-  background: #efeadd;
+  padding: 0 5px;
+  background: #fff;
   border: 1px solid #c8bfa6;
-  border-radius: 8px;
-  font-size: 10px;
+  border-radius: 7px;
+  font-size: 9px;
   color: #3a3a36;
+  font-family: Monaco, monospace;
+}
+.card-bottom {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 5px 7px;
+  overflow-y: auto;
 }
 .explanation {
   font-size: 10px;
