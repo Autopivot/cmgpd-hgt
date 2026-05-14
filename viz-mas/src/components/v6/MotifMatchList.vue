@@ -23,7 +23,7 @@
         :title="row.motif.id"
       >
         <div class="card-top">
-          <MotifMiniGlyph :motif="row.motif" :size="60" />
+          <MotifMiniGlyph :motif="row.motif" :size="110" />
           <div class="motif-name">{{ row.motif.name_en || row.motif.id }}</div>
           <div class="match-line">
             <span class="match-label">matched:</span>
@@ -192,7 +192,7 @@ watch(
  * so the explanation expands to fill any leftover vertical space. */
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   grid-auto-rows: 1fr;
   gap: 6px;
   align-items: stretch;
