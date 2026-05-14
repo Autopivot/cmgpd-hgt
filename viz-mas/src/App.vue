@@ -3,25 +3,31 @@
     <div class="title-bar">
       <div class="title">GeneaLink</div>
       <div class="cohort-config">
-        <span class="lbl">YEAR</span>
+        <span class="lbl">{{ T.titlebar.year }}</span>
         <div class="seg">
           <button v-for="y in ALL_YEARS" :key="y" :class="{ active: state.year === y }"
                   @click="setYear(y)">{{ y }}</button>
         </div>
       </div>
       <div class="actions">
-        <span class="status" :class="{ ok: healthy }">{{ healthy ? 'backend ok' : 'static data' }}</span>
+        <button class="btn lang-toggle" :title="lang === 'zh' ? 'switch to English' : '切换到中文'"
+                @click="toggleLang">
+          {{ lang === 'zh' ? T.titlebar.langEn : T.titlebar.langZh }}
+        </button>
+        <span class="status" :class="{ ok: healthy }">
+          {{ healthy ? T.titlebar.backendOk : T.titlebar.backendStatic }}
+        </span>
         <div class="key-popover">
           <button class="btn key-btn" :class="{ ok: llmUseLLM, missing: !llmUseLLM }"
-                  :title="llmUseLLM ? 'DashScope API key set' : 'Set DashScope API key'"
+                  :title="llmUseLLM ? T.titlebar.keyTooltipSet : T.titlebar.keyTooltipMissing"
                   @click="keyOpen = !keyOpen">🔑</button>
           <div v-if="keyOpen" class="key-card">
             <div class="key-row">
-              <span class="tiny muted">model</span>
+              <span class="tiny muted">{{ T.titlebar.model }}</span>
               <code class="model-pin">qwen3.6-plus</code>
             </div>
             <div class="key-row">
-              <span class="tiny muted">DashScope key</span>
+              <span class="tiny muted">{{ T.titlebar.dashscopeKey }}</span>
               <input class="mini-input key" :type="showKey ? 'text' : 'password'"
                      v-model="llmKey" placeholder="sk-…"
                      @keydown.enter="commitKey" />
@@ -32,20 +38,20 @@
               <span class="llm-status tiny" :class="{ on: llmUseLLM }">
                 {{ llmUseLLM ? 'llm' : 'stub' }}
               </span>
-              <button class="btn" @click="commitKey">Save</button>
-              <button class="btn ghost" @click="keyOpen = false">Close</button>
+              <button class="btn" @click="commitKey">{{ T.titlebar.save }}</button>
+              <button class="btn ghost" @click="keyOpen = false">{{ T.titlebar.close }}</button>
             </div>
           </div>
         </div>
-        <button class="btn" @click="resetSelection">Reset</button>
+        <button class="btn" @click="resetSelection">{{ T.titlebar.reset }}</button>
       </div>
     </div>
     <div class="mode-banner" :class="state.year === 1882 ? 'training' : 'transfer'">
       <template v-if="state.year === 1882">
-        🟢 training mode · 1882 (full GT) — V6 weight sliders adjustable, "save to cell" persists per-hex rule profiles
+        {{ T.mode.trainingPrefix }}{{ state.year }}{{ T.mode.trainingSuffix }}
       </template>
       <template v-else>
-        🔵 transfer mode · {{ state.year }} (no GT) — V6 cell rules loaded from 1882; sliders read-only and feed MAS as soft prior
+        {{ T.mode.transferPrefix }}{{ state.year }}{{ T.mode.transferSuffix }}
       </template>
     </div>
     <div class="body" ref="bodyRef">
@@ -83,6 +89,7 @@ import AgentBattleView from './components/AgentBattleView.vue'
 import RulerInjectorView from './components/RulerInjectorView.vue'
 import { health, ALL_YEARS, getLLMConfig, setLLMConfig } from './api/client.js'
 import bus from './utils/eventbus.js'
+import { T, t, lang, toggleLang } from './i18n/index.js'
 
 // Single global cohort state. Provided to all child views via `inject('appState')`.
 const state = reactive({
@@ -92,6 +99,9 @@ const state = reactive({
   selectedPairIds: [],   // set by lasso/hex-select in V3, consumed by V4/V5
 })
 provide('appState', state)
+provide('t', t)
+provide('T', T)
+provide('lang', lang)
 
 const COL_KEY = 'cmgpd-col-pct-v1'
 const ROW_KEY = 'cmgpd-row-pct-v1'
@@ -354,6 +364,12 @@ onUnmounted(() => {
     &.ok { color: #d4a85d; border-color: #d4a85d; }
   }
   .btn { font-size: 10px; padding: 3px 8px; }
+  .lang-toggle {
+    font-family: Monaco, monospace; font-weight: 700;
+    background: #2a2a2a; color: #d4a85d; border: 1px solid #d4a85d;
+    border-radius: 3px; padding: 2px 6px; cursor: pointer;
+    &:hover { background: #d4a85d; color: #1a1a1a; }
+  }
   .key-popover { position: relative; display: inline-block; }
   .key-btn {
     background: #2a2a2a; color: #eaeaea; border: 1px solid #555;

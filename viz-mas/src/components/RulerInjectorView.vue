@@ -1,7 +1,7 @@
 <template>
   <div class="panel">
     <div class="panel-head">
-      <span>V6: Rules View</span>
+      <span>{{ T.panel.v6 }}</span>
       <span v-if="contextSource" class="tiny muted ctx-tag">
         ctx: {{ contextSource }} · {{ candidates.length }} candidate(s)
       </span>
@@ -23,21 +23,21 @@
     </div>
     <div class="panel-body">
       <section class="macro">
-        <h3 class="section-head">MACRO FEATURES</h3>
+        <h3 class="section-head">{{ T.v6.macroFeatures }}</h3>
         <div class="macro-row">
           <MacroCombinedChart :year="appState?.year ?? 1882" />
           <PairSimilarityBarChart :husband="husband" :candidates="candidates" />
         </div>
       </section>
       <section class="rules">
-        <h3 class="section-head">RULE WEIGHTS</h3>
+        <h3 class="section-head">{{ T.v6.ruleWeights }}</h3>
         <RuleWeightsEditor
           :husband="husband"
           :readonly="(appState?.year ?? 1882) !== 1882"
         />
       </section>
       <section class="micro">
-        <h3 class="section-head">MICRO MOTIFS</h3>
+        <h3 class="section-head">{{ T.v6.microMotifs }}</h3>
         <MotifMatchList
           :husband="husband"
           :candidates="candidates"
@@ -58,6 +58,7 @@ import RuleWeightsEditor from './v6/RuleWeightsEditor.vue'
 import { getCellRules, postCellRules } from '../api/client.js'
 
 const appState = inject('appState', null)
+const T = inject('T', { panel: { v6: 'F: Rules View' }, v6: { macroFeatures: 'MACRO FEATURES', ruleWeights: 'RULE WEIGHTS', microMotifs: 'MICRO MOTIFS' } })
 
 const husband = ref(null)        // { husband_id }
 const candidates = ref([])       // [{ wife_id, score?, score_gap? }, ...]

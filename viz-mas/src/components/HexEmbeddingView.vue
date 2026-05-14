@@ -1,7 +1,7 @@
 <template>
   <div class="panel">
     <div class="panel-head">
-      <span>V3: Embedding View</span>
+      <span>{{ T.panel.v3 }}</span>
       <span class="legend-row">
         <span v-if="colorMode === 'gap'" class="score-legend tiny" title="ψ(m,w_true) − ψ(m,w_best_neg) for positives; ψ(m,w_neg) − ψ(m,w_true) for hard-negs. Anchors saturate at ±2 logits.">
           <span class="lbl">score gap</span>
@@ -71,6 +71,7 @@ const loading = ref(true)
 const error = ref(null)
 
 const appState = inject('appState')
+const T = inject('T', { panel: { v3: 'C: Embedding View' } })
 
 // 3 modes:
 //   'honeycomb' — canonical packed cells, score-gap diverging fill,

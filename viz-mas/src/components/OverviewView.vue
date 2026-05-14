@@ -1,7 +1,7 @@
 <template>
   <div class="panel">
     <div class="panel-head">
-      <span>V1: Overview</span>
+      <span>{{ T.panel.v1 }}</span>
       <span class="tiny muted">{{ statusLine }}</span>
       <button class="btn ghost tiny" :title="resetTitle" @click="reset">↺ reset</button>
       <button class="fs-btn" @click="bus.emit('full-screen', 'v1')" title="Full screen">⛶</button>
@@ -75,6 +75,7 @@ import { buildHoneycomb } from '../canonical/cluster_layout.js'
 import bus from '../utils/eventbus.js'
 
 const appState = inject('appState')
+const T = inject('T', { panel: { v1: 'A: Overview' } })
 const svgRef = ref(null)
 const wrapRef = ref(null)
 const data = ref({

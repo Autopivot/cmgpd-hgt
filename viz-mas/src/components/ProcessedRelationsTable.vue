@@ -1,7 +1,7 @@
 <template>
   <div class="panel">
     <div class="panel-head">
-      <span>V2: Process View</span>
+      <span>{{ T.panel.v2 }}</span>
       <span class="tiny muted">{{ rows.length }} accepted</span>
       <label class="tiny gt-toggle" title="Reveal whether the accepted edge is the true r_hw (GT)">
         <input type="checkbox" v-model="showGT" /> show GT
@@ -66,6 +66,7 @@ import { getAccepted, restoreMatch, loadCohort } from '../api/client.js'
 import bus from '../utils/eventbus.js'
 
 const appState = inject('appState')
+const T = inject('T', { panel: { v2: 'B: Process View' } })
 const accepted = ref({})       // { husband_id → record }
 const cohort = ref(null)       // current cohort JSON for source-tag computation
 const restoring = ref(null)    // husband_id currently being restored

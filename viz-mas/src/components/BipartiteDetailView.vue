@@ -1,7 +1,7 @@
 <template>
   <div class="panel">
     <div class="panel-head">
-      <span>V4: Bipartite View</span>
+      <span>{{ T.panel.v4 }}</span>
       <span class="tiny muted">{{ pairsToShow.length }} pair(s) · click a person</span>
       <span class="batch-ctl tiny" v-if="pairsToShow.length">
         gap ≥
@@ -59,6 +59,7 @@ import bus from '../utils/eventbus.js'
 import { getProfile, overrideMatch } from '../api/client.js'
 
 const appState = inject('appState')
+const T = inject('T', { panel: { v4: 'D: Bipartite View' } })
 const svgRef = ref(null)
 const wrapRef = ref(null)
 const selectedPairs = ref([])
