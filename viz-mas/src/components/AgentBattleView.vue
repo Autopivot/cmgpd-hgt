@@ -70,50 +70,16 @@
           no candidates yet — press ▶ arena to spin up the per-person agents
         </div>
         <div v-else class="arena-grid">
-          <div v-for="a in agents" :key="a.id" class="arena-card"
-               :class="{ dim: a.eliminated, pick: accepted && accepted.id === a.id }">
-            <div class="card-head">
-              <span class="chip c">c-{{ a.id }}</span>
-              <span class="score" :class="scoreClass(a.target_score)">
-                {{ a.target_score?.toFixed?.(1) ?? '—' }}
-              </span>
-              <span class="bilateral tiny" v-if="a.candidate_score != null"
-                    :title="`candidate (wife) returned ${a.candidate_score.toFixed(1)}`">
-                ⇄ {{ a.candidate_score?.toFixed?.(1) }}
-              </span>
-            </div>
-            <div class="card-meta tiny" v-if="a.profile">
-              b{{ a.profile.birth_year ?? '?' }} · bnr{{ a.profile.banner_id ?? '?' }} ·
-              com{{ a.profile.community_id ?? '?' }}
-            </div>
-            <div class="card-pre tiny muted">
-              HGT {{ a.pre_score?.toFixed?.(2) }} · gap {{ a.score_gap?.toFixed?.(2) }} ·
-              {{ a.hgt_label === 1 ? 'GT pair' : 'hard neg' }}
-            </div>
-            <div class="card-feed">
-              <div v-if="a.target_reason" class="reason">
-                <strong>H→W:</strong> {{ a.target_reason }}
-              </div>
-              <div v-if="a.candidate_reason" class="reason cand">
-                <strong>W→H:</strong> {{ a.candidate_reason }}
-              </div>
-              <div v-if="!a.target_reason && a.feed.length" class="feed-tokens">
-                {{ a.feed.join('') }}
-              </div>
-            </div>
-            <div class="card-actions">
-              <button class="tiny linkbtn"
-                      :disabled="a.eliminated || (accepted && accepted.id === a.id)"
-                      @click="acceptOne(a)">accept</button>
-              <button class="tiny linkbtn warn"
-                      :disabled="a.eliminated"
-                      @click="eliminate(a)">eliminate</button>
-              <button class="tiny linkbtn"
-                      @click="boost(a, +0.5)">boost</button>
-              <button class="tiny linkbtn"
-                      @click="boost(a, -0.5)">penalise</button>
-            </div>
-          </div>
+          <CandidateCard
+            v-for="a in agents"
+            :key="a.id"
+            :agent="a"
+            :is-picked="!!(accepted && accepted.id === a.id)"
+            @accept="acceptOne($event)"
+            @eliminate="eliminate($event)"
+            @boost="boost($event, +0.5)"
+            @penalise="boost($event, -0.5)"
+          />
         </div>
       </div>
 
@@ -140,6 +106,7 @@ import {
   startNegotiation, openNegotiationStream, sendNegotiationHint, overrideMatch, getPair,
 } from '../api/client.js'
 import bus from '../utils/eventbus.js'
+import CandidateCard from './CandidateCard.vue'
 
 const appState = inject('appState')
 const husband = ref(null)        // { id, ... }
