@@ -96,15 +96,31 @@ watch(() => `${appState.year}|${appState.ablation}`, () => {
   draw()
 })
 
+// React to a match acceptance from anywhere (V5 arena, V4 batch-accept,
+// future producers). Drop the matching (husband, wife) edge from V4's
+// view so the bipartite graph stays in sync with V1/V2/V3. Idempotent —
+// when V4 itself emits the accept, the pair is usually already gone, so
+// the filter is a no-op and `draw()` is skipped.
+function onAccepted(evt) {
+  if (!evt || evt.husband_id == null || evt.wife_id == null) return
+  const before = selectedPairs.value.length
+  selectedPairs.value = selectedPairs.value.filter(
+    p => !(p.husband_id === evt.husband_id && p.wife_id === evt.wife_id)
+  )
+  if (selectedPairs.value.length !== before) draw()
+}
+
 onMounted(() => {
   bus.on('hex-select', onHexSelect)
   bus.on('hex-clear', onHexClear)
+  bus.on('match-accepted', onAccepted)
   window.addEventListener('resize', draw)
   draw()
 })
 onUnmounted(() => {
   bus.off('hex-select', onHexSelect)
   bus.off('hex-clear', onHexClear)
+  bus.off('match-accepted', onAccepted)
   window.removeEventListener('resize', draw)
 })
 </script>
