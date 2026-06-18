@@ -1,13 +1,19 @@
 <template>
   <div class="panel">
     <div class="panel-head">
-      <span>V3 · Relation Embedding Space</span>
+      <span>V3: Embedding View</span>
       <span class="legend-row">
-        <span class="score-legend tiny" title="ψ(m,w_true) − ψ(m,w_best_neg) for positives; ψ(m,w_neg) − ψ(m,w_true) for hard-negs. Anchors saturate at ±2 logits.">
+        <span v-if="colorMode === 'gap'" class="score-legend tiny" title="ψ(m,w_true) − ψ(m,w_best_neg) for positives; ψ(m,w_neg) − ψ(m,w_true) for hard-negs. Anchors saturate at ±2 logits.">
           <span class="lbl">score gap</span>
           <span class="tick">−2</span>
           <span class="ramp gap-ramp"></span>
           <span class="tick">+2</span>
+        </span>
+        <span v-else class="score-legend tiny" title="HGT raw logit, GT-free. Anchors at the cohort min/max — sequential ramp, NOT a correctness signal.">
+          <span class="lbl">HGT score</span>
+          <span class="tick">low</span>
+          <span class="ramp seq-ramp"></span>
+          <span class="tick">high</span>
         </span>
         <span class="score-legend tiny" title="Background heatmap = training-cohort density">
           <span class="lbl">train ref</span>
@@ -15,6 +21,12 @@
         </span>
       </span>
       <span class="tiny muted">{{ hint }}</span>
+      <button class="mode-btn color-mode-btn" @click="cycleColorMode"
+              :title="colorMode === 'gap'
+                ? 'eval mode (GT-aware): cell color = mean score_gap (red=wrong, green=right)'
+                : 'deploy mode (GT-free): cell color = mean HGT score (sequential, confidence only — NOT correctness)'">
+        {{ colorMode === 'gap' ? '⚖ eval' : '↪ deploy' }}
+      </button>
       <button class="mode-btn" @click="cycleMode" :title="`mode: ${mode}`">
         {{ modeLabel }}
       </button>
@@ -87,6 +99,16 @@ function cycleMode() {
   draw()
 }
 
+// Color mode toggles between GT-dependent gap diverging palette ('gap', eval)
+// and GT-free score sequential palette ('score', deploy).
+const COLOR_MODE_KEY = 'cmgpd-v3-color-mode'
+const colorMode = ref(localStorage.getItem(COLOR_MODE_KEY) === 'score' ? 'score' : 'gap')
+function cycleColorMode() {
+  colorMode.value = colorMode.value === 'gap' ? 'score' : 'gap'
+  try { localStorage.setItem(COLOR_MODE_KEY, colorMode.value) } catch {}
+  draw()
+}
+
 const lassoOn = ref(false)
 function toggleLasso() {
   lassoOn.value = !lassoOn.value
@@ -101,12 +123,42 @@ let selected = ref(null)
 const acceptedSet = ref(new Set())
 
 function resizeHandler() { draw() }
+function onPanelResized({ ids } = {}) {
+  if (Array.isArray(ids) && !ids.includes('v3')) return
+  draw()
+}
+
+// Bound cell IDs (those with a saved 1882 rule profile). Drives the
+// gold-dot indicator on V3 hexes. Refreshed on cohort load + on
+// 'cell-rules-updated' bus events so a save lights up the dot live.
+const boundCellIds = ref(new Set())
+
+async function refreshBoundCells() {
+  try {
+    const r = await fetch('/api/cell-rules')
+    if (!r.ok) return
+    const j = await r.json()
+    boundCellIds.value = new Set((j.bound || []).map(b => Number(b.cell_id)))
+  } catch { /* network / 503 — leave empty */ }
+}
 
 async function load() {
   loading.value = true
   error.value = null
   try {
     data = await getEmbedding({ year: appState.year, ablation: appState.ablation })
+    // Transfer mode: project the 1882 contour onto the current cohort so the
+    // background heatmap is shared across years (analyst can read cells
+    // against a stable reference). 1882 itself uses its own train_ref_coords.
+    if (appState.year !== 1882) {
+      try {
+        const ref = await getEmbedding({ year: 1882, ablation: appState.ablation })
+        if (Array.isArray(ref?.train_ref_coords) && ref.train_ref_coords.length) {
+          data = { ...data, train_ref_coords: ref.train_ref_coords, train_ref_n: ref.train_ref_n }
+        }
+      } catch { /* fall through with cohort-local contour */ }
+    }
+    await refreshBoundCells()
     loading.value = false
     draw()
   } catch (e) {
@@ -115,6 +167,8 @@ async function load() {
     console.warn(e)
   }
 }
+
+function onCellRulesUpdated() { refreshBoundCells().then(() => draw()) }
 
 function redraw() { draw() }
 
@@ -286,7 +340,12 @@ function drawTrainRefHeatmap(svg, refNorm, W, H) {
 }
 
 function drawHoneycomb(svg, layout, W, H) {
-  const opts = { width: W, height: H, marginPx: MARGIN_PX }
+  const opts = {
+    width: W, height: H, marginPx: MARGIN_PX,
+    colorBy: colorMode.value,
+    showStripes: colorMode.value === 'gap',
+    boundCellIds: boundCellIds.value,
+  }
   renderHoneycomb(svg, layout, opts)
 }
 
@@ -302,7 +361,15 @@ function onCanonicalCellClick(ev) {
     applyCellHighlight()
     return
   }
-  bus.emit('hex-select', { binKey: `cell:${cell.id}`, pairs })
+  // Surface cell_id explicitly so V6 (RulerInjectorView) can bind aggregated
+  // rule profiles to this hex cell. binKey already encodes the id but
+  // downstream consumers shouldn't have to parse a string.
+  bus.emit('hex-select', {
+    binKey: `cell:${cell.id}`,
+    cell_id: cell.id,
+    pairIds: pairIds.slice(),
+    pairs,
+  })
   selected.value = { kind: 'cell', id: cell.id }
   applyCellHighlight()
 }
@@ -411,14 +478,32 @@ function gapColor(g) {
   if (v <= 0) return d3.interpolateRgb('#993c1d', '#f5f1e8')((v + 2) / 2)
   return d3.interpolateRgb('#f5f1e8', '#0f6e56')(v / 2)
 }
+// Sequential HGT-score palette (GT-free). Anchors at cohort min/max
+// computed once per draw and stashed on a closure-scoped object below.
+let _scoreScale = null
+function scoreColor(s) {
+  if (!_scoreScale) return '#cfcfcf'
+  const t = _scoreScale.range > 0 ? (s - _scoreScale.min) / _scoreScale.range : 0.5
+  return d3.interpolateRgb('#f1ecdf', '#3a6a8a')(Math.max(0, Math.min(1, t)))
+}
+function dotColor(p) {
+  return colorMode.value === 'score' ? scoreColor(p.raw_score) : gapColor(p.score_gap)
+}
 
 function _renderDots(svg, points, W, H) {
   const t = pxTransform(W, H)
+  if (colorMode.value === 'score' && points.length) {
+    let mn = Infinity, mx = -Infinity
+    for (const p of points) { if (p.raw_score < mn) mn = p.raw_score; if (p.raw_score > mx) mx = p.raw_score }
+    _scoreScale = { min: mn, max: mx, range: mx - mn }
+  } else {
+    _scoreScale = null
+  }
   const root = d3.select(svg).append('g').attr('class', 'scatter')
   root.selectAll('circle').data(points).enter().append('circle')
     .attr('cx', p => t.x(p.x)).attr('cy', p => t.y(p.y))
     .attr('r', p => p.pair_type === 'pred' ? 2.4 : 3.2)
-    .attr('fill', p => gapColor(p.score_gap))
+    .attr('fill', p => dotColor(p))
     .attr('stroke', '#6d6458')
     .attr('stroke-width', p => p.pair_type === 'pred' ? 0.3 : 0.5)
     .attr('stroke-dasharray', p => p.pair_type === 'pred' ? '1.5 1.5' : null)
@@ -518,9 +603,11 @@ function onExternalClear() {
 onMounted(() => {
   load()
   window.addEventListener('resize', resizeHandler)
+  bus.on('panel-resized', onPanelResized)
   bus.on('match-accepted', onAccepted)
   bus.on('match-restored', onRestored)
   bus.on('hex-clear', onExternalClear)
+  bus.on('cell-rules-updated', onCellRulesUpdated)
   if (svgRef.value) {
     svgRef.value.addEventListener('cell-clicked', onCanonicalCellClick)
     svgRef.value.addEventListener('cell-hovered', onCanonicalCellHover)
@@ -528,9 +615,11 @@ onMounted(() => {
 })
 onUnmounted(() => {
   window.removeEventListener('resize', resizeHandler)
+  bus.off('panel-resized', onPanelResized)
   bus.off('match-accepted', onAccepted)
   bus.off('match-restored', onRestored)
   bus.off('hex-clear', onExternalClear)
+  bus.off('cell-rules-updated', onCellRulesUpdated)
   if (svgRef.value) {
     svgRef.value.removeEventListener('cell-clicked', onCanonicalCellClick)
     svgRef.value.removeEventListener('cell-hovered', onCanonicalCellHover)
@@ -546,6 +635,12 @@ onUnmounted(() => {
   background: #f5f5f5; cursor: pointer; color: #1a1a1a;
   &:hover { background: #ffe082; border-color: #d4a85d; }
   &.on { background: #ffe082; border-color: #d4a85d; font-weight: 700; }
+}
+.color-mode-btn {
+  font-weight: 600;
+  background: #eef3f7;
+  border-color: #5a7a90;
+  color: #1a1a1a;
 }
 .topk-ctl {
   display: inline-flex; align-items: center; gap: 2px;
@@ -567,6 +662,9 @@ onUnmounted(() => {
     }
     .ramp.gap-ramp {
       background: linear-gradient(to right, #993c1d 0%, #f5f1e8 50%, #0f6e56 100%);
+    }
+    .ramp.seq-ramp {
+      background: linear-gradient(to right, #f1ecdf 0%, #3a6a8a 100%);
     }
     .ramp.ref-ramp {
       width: 36px;

@@ -1,115 +1,315 @@
 <template>
   <div class="panel">
     <div class="panel-head">
-      <span>V6 · Rule Injector · Macro × Motifs</span>
-      <span class="tiny muted" :class="{ ok: synced }">{{ syncStatus }}</span>
+      <span>V6: Rules View</span>
+      <span v-if="contextSource" class="tiny muted ctx-tag">
+        ctx: {{ contextSource }} · {{ candidates.length }} candidate(s)
+      </span>
+      <span v-if="currentCellId != null" class="cell-chip tiny" :title="cellChipTitle">
+        cell #{{ currentCellId }} ·
+        <template v-if="cellRules && (cellRules.n_husbands ?? 0) > 0">
+          {{ cellRules.n_husbands }} bound · last saved {{ cellRules.updated_at }}
+        </template>
+        <template v-else>unbound</template>
+      </span>
+      <button
+        v-if="canSaveCell"
+        class="cell-save-btn"
+        @click="saveCellRules"
+        :disabled="saving"
+        :title="`Aggregate ${cellPairIds.length} pair(s) of per-husband rule weights into this cell's rule profile (year 1882).`"
+      >{{ saving ? '… saving' : '💾 save to cell' }}</button>
       <button class="fs-btn" @click="bus.emit('full-screen', 'v6')" title="Full screen">⛶</button>
     </div>
     <div class="panel-body">
-      <div class="section">
-        <h3 class="tiny">Macro feature weights</h3>
-        <div v-for="r in rules.macro" :key="r.id" class="slider-row">
-          <span class="lbl tiny">{{ r.label }}</span>
-          <input type="range" min="0" max="2" step="0.05" v-model.number="r.weight"
-                 @input="onMacroChange" />
-          <span class="val tiny">{{ r.weight.toFixed(2) }}</span>
+      <section class="macro">
+        <h3 class="section-head">MACRO FEATURES</h3>
+        <div class="macro-row">
+          <MacroCombinedChart :year="appState?.year ?? 1882" />
+          <PairSimilarityBarChart :husband="husband" :candidates="candidates" />
         </div>
-      </div>
-      <div class="section">
-        <h3 class="tiny">Micro motifs</h3>
-        <ul class="motifs">
-          <li v-for="m in rules.motifs" :key="m.id" :class="{ off: !m.enabled }">
-            <label>
-              <input type="checkbox" v-model="m.enabled" @change="onMotifChange" />
-              <MotifGlyph :example="m.example" :size="78" />
-              <div class="motif-text">
-                <div class="motif-title">{{ m.title }}</div>
-                <div class="tiny muted">{{ m.example_count }} examples</div>
-              </div>
-            </label>
-          </li>
-        </ul>
-      </div>
-      <div class="tiny muted footer">
-        Sliders + checkboxes are pushed to the live MAS scorer in real time
-        when the FastAPI backend at <code>:8001</code> is reachable.
-        Without it, changes are kept in a local cache and still reach V5's
-        agent rounds and SHAP waterfall.
-      </div>
+      </section>
+      <section class="rules">
+        <h3 class="section-head">RULE WEIGHTS</h3>
+        <RuleWeightsEditor
+          :husband="husband"
+          :readonly="(appState?.year ?? 1882) !== 1882"
+        />
+      </section>
+      <section class="micro">
+        <h3 class="section-head">MICRO MOTIFS</h3>
+        <MotifMatchList
+          :husband="husband"
+          :candidates="candidates"
+          :year="appState?.year ?? 1882"
+        />
+      </section>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { getRules, postRules } from '../api/client.js'
+import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
 import bus from '../utils/eventbus.js'
-import MotifGlyph from './MotifGlyph.vue'
+import MacroCombinedChart from './v6/MacroCombinedChart.vue'
+import PairSimilarityBarChart from './v6/PairSimilarityBarChart.vue'
+import MotifMatchList from './v6/MotifMatchList.vue'
+import RuleWeightsEditor from './v6/RuleWeightsEditor.vue'
+import { getCellRules, postCellRules } from '../api/client.js'
 
-const rules = ref({ macro: [], motifs: [] })
-const synced = ref(false)
-const syncStatus = ref('initialising…')
+const appState = inject('appState', null)
 
-let pushTimer = null
-function schedulePush() {
-  // Debounce slider drags — push at most every 200 ms.
-  clearTimeout(pushTimer)
-  pushTimer = setTimeout(async () => {
-    syncStatus.value = 'pushing…'
-    const macroBody = {}
-    for (const r of rules.value.macro) macroBody[r.id] = r.weight
-    const motifBody = {}
-    for (const m of rules.value.motifs) motifBody[m.id] = m.enabled
-    try {
-      await postRules({ macro: macroBody, motifs: motifBody })
-      synced.value = true
-      syncStatus.value = 'synced'
-    } catch {
-      synced.value = false
-      syncStatus.value = 'local only'
-    }
-    bus.emit('rules-updated', { macro: macroBody, motifs: motifBody })
-  }, 200)
+const husband = ref(null)        // { husband_id }
+const candidates = ref([])       // [{ wife_id, score?, score_gap? }, ...]
+const contextSource = ref('')    // 'V5 arena' | 'V4 click' | ''
+
+// ── F2 cell-binding state ────────────────────────────────────────────────
+// `currentCellId` is the V3 hex cell whose pairs are currently surfaced in
+// V4/V5/V6. We always read+write the 1882 cell-rules profile (regardless
+// of the active cohort year) — F1 only allows editing in 1882, and 1885+
+// is read-only and pre-fills from the saved 1882 profile so reviewers see
+// the exact rule snapshot the analyst trained on.
+const currentCellId = ref(null)
+const cellPairIds = ref([])      // husband_ids in the current hex cell (raw .pairs[i].husband_id)
+const cellPairKeys = ref([])     // `${husband_id}|${wife_id}` strings for membership tests
+const cellRules = ref(null)      // server payload for cell #currentCellId @ year=1882
+const saving = ref(false)
+
+const HUSBAND_RULES_PREFIX = 'cmgpd-cell-rules-husband-'
+
+// Save button only when authoring is allowed (1882) and we have a cell.
+const canSaveCell = computed(
+  () => (appState?.year ?? 1882) === 1882 && currentCellId.value != null
+)
+
+const cellChipTitle = computed(() => {
+  if (!cellRules.value) return 'No saved rule profile for this hex cell yet.'
+  const n = cellRules.value.n_husbands ?? 0
+  return `cell #${currentCellId.value}: aggregated from ${n} per-husband rule sheet(s); last saved ${cellRules.value.updated_at}`
+})
+
+// V5 emits cohort-context after the user hits ▶ arena and the per-person
+// agents are spawned — that's the canonical candidate set the user wants V6
+// to analyse. V4 click also emits husband-context with the V4-cohort candidates;
+// we keep that as a seed so V6 doesn't sit empty before arena starts.
+function onCohortContext({ husband_id, candidate_ids }) {
+  if (!husband_id || !Array.isArray(candidate_ids) || !candidate_ids.length) {
+    return  // ignore the V5 clear-events; husband-context handles its own clear
+  }
+  husband.value = { husband_id }
+  candidates.value = candidate_ids.map(id => ({ wife_id: id }))
+  contextSource.value = 'V5 arena'
+}
+function onHusbandContext({ husband_id, candidates: cs }) {
+  // Don't overwrite a V5-arena context with a V4 click for the same husband —
+  // arena candidates are the authoritative set once spawned.
+  if (contextSource.value === 'V5 arena' && husband.value?.husband_id === husband_id) {
+    return
+  }
+  husband.value = husband_id ? { husband_id } : null
+  candidates.value = cs || []
+  contextSource.value = husband_id ? 'V4 click' : ''
 }
 
-function onMacroChange() { schedulePush() }
-function onMotifChange() { schedulePush() }
+// V3 emits hex-select with { cell_id, pairIds, pairs } when a hex cell
+// is clicked. F2 binds rule profiles to that cell id.
+function onHexSelect(payload) {
+  if (!payload || payload.cell_id == null) return
+  currentCellId.value = payload.cell_id
+  const pairs = Array.isArray(payload.pairs) ? payload.pairs : []
+  cellPairIds.value = pairs.map(p => p?.husband_id).filter(v => v != null)
+  cellPairKeys.value = pairs
+    .filter(p => p && p.husband_id != null && p.wife_id != null)
+    .map(p => `${p.husband_id}|${p.wife_id}`)
+  // Always pull the 1882 profile — that's the canonical edit year.
+  refreshCellRules()
+}
 
-onMounted(async () => {
-  const r = await getRules()
-  rules.value = r
-  syncStatus.value = 'synced'
-  synced.value = true
+function onHexClear() {
+  currentCellId.value = null
+  cellPairIds.value = []
+  cellPairKeys.value = []
+  cellRules.value = null
+}
+
+async function refreshCellRules() {
+  if (currentCellId.value == null) {
+    cellRules.value = null
+    return
+  }
+  const cid = currentCellId.value
+  const data = await getCellRules({ cell_id: cid, year: 1882 })
+  // Guard against late responses for a stale cell.
+  if (currentCellId.value !== cid) return
+  cellRules.value = data
+  // In 1885+ mode, surface the saved profile so F1's read-only sliders
+  // pick it up. F1 listens for `cell-rules-updated`.
+  if ((appState?.year ?? 1882) !== 1882 && data) {
+    bus.emit('cell-rules-updated', {
+      cell_id: cid,
+      year: 1882,
+      weights: data.weights || {},
+      motifs_enabled: data.motifs_enabled || {},
+      n_husbands: data.n_husbands ?? 0,
+      updated_at: data.updated_at || null,
+    })
+  }
+}
+
+// Aggregate per-husband rule sheets (F1 writes to localStorage under
+// `cmgpd-cell-rules-husband-{husband_id}` as {weights, motifs_enabled})
+// into a single per-cell profile. Strategy:
+//   • Mean-reduce numeric weights (per-key independently, so missing keys
+//     in some sheets don't penalise others).
+//   • OR-reduce motif booleans — if any husband in the cell flagged a
+//     motif as enabled, the cell-level profile keeps it enabled.
+// Defaults applied when a husband in the cell has no localStorage sheet —
+// the user opened the cell + visited the husband but never moved a slider.
+// Treat that as implicit endorsement of the defaults so the cell can still
+// bind. Husbands who DID adjust still drive the mean.
+const DEFAULT_WEIGHTS = {
+  paternal_lineage_proximity: 1.0, shared_siblings: 1.0,
+  same_household_history: 1.0, same_banner: 1.0,
+}
+const DEFAULT_MOTIF_IDS = [
+  'M01_direct_sibling', 'M02_shared_father_via_fs_fd',
+  'M03_two_degree_sibling_chain', 'M10_household_mediated_daughter',
+  'CTX_same_banner', 'CTX_same_community',
+  'CTX_co_resident', 'CTX_same_region',
+]
+
+function _aggregateHusbandRules(husbandIds) {
+  const weightSums = {}
+  const weightCounts = {}
+  const motifsAny = {}
+  let n = 0
+  const seen = new Set()
+  for (const hid of husbandIds) {
+    if (hid == null || seen.has(hid)) continue
+    seen.add(hid)
+    let parsed = null
+    try {
+      const raw = localStorage.getItem(`${HUSBAND_RULES_PREFIX}${hid}`)
+      if (raw) parsed = JSON.parse(raw)
+    } catch {}
+    n += 1
+    const w = (parsed && parsed.weights) || DEFAULT_WEIGHTS
+    for (const k of Object.keys(DEFAULT_WEIGHTS)) {
+      const v = Number(w[k] ?? DEFAULT_WEIGHTS[k])
+      if (!Number.isFinite(v)) continue
+      weightSums[k] = (weightSums[k] || 0) + v
+      weightCounts[k] = (weightCounts[k] || 0) + 1
+    }
+    const m = (parsed && parsed.motifs_enabled) || null
+    if (m && Object.keys(m).length) {
+      for (const k of Object.keys(m)) motifsAny[k] = motifsAny[k] || !!m[k]
+    } else {
+      for (const k of DEFAULT_MOTIF_IDS) motifsAny[k] = motifsAny[k] || true
+    }
+  }
+  const weights = {}
+  for (const k of Object.keys(weightSums)) {
+    weights[k] = weightSums[k] / Math.max(1, weightCounts[k])
+  }
+  return { weights, motifs_enabled: motifsAny, n_husbands: n }
+}
+
+async function saveCellRules() {
+  if (!canSaveCell.value || saving.value) return
+  saving.value = true
+  try {
+    const cid = currentCellId.value
+    const agg = _aggregateHusbandRules(cellPairIds.value)
+    await postCellRules({
+      cell_id: cid,
+      year: 1882,
+      n_husbands: agg.n_husbands,
+      weights: agg.weights,
+      motifs_enabled: agg.motifs_enabled,
+    })
+    await refreshCellRules()
+  } catch (e) {
+    console.warn('postCellRules failed', e)
+  } finally {
+    saving.value = false
+  }
+}
+
+// When the cohort year flips into 1885+ for an already-selected cell,
+// re-fetch so F1 receives the read-only fill.
+watch(
+  () => `${appState?.year ?? 1882}|${currentCellId.value}`,
+  () => { if (currentCellId.value != null) refreshCellRules() }
+)
+
+// In transfer mode (1885+), the editor's husband-change watch resets sliders
+// to defaults whenever a new husband arrives. Re-broadcast the cached cell
+// profile after each husband swap so the editor's read-only sliders pick up
+// the saved 1882 weights again.
+watch(
+  () => husband.value?.husband_id,
+  (hid) => {
+    if (!hid) return
+    if ((appState?.year ?? 1882) === 1882) return
+    if (!cellRules.value) return
+    bus.emit('cell-rules-updated', {
+      cell_id: currentCellId.value,
+      year: 1882,
+      weights: cellRules.value.weights || {},
+      motifs_enabled: cellRules.value.motifs_enabled || {},
+      n_husbands: cellRules.value.n_husbands ?? 0,
+      updated_at: cellRules.value.updated_at || null,
+    })
+  },
+)
+
+onMounted(() => {
+  bus.on('cohort-context', onCohortContext)
+  bus.on('husband-context', onHusbandContext)
+  bus.on('hex-select', onHexSelect)
+  bus.on('hex-clear', onHexClear)
+})
+onUnmounted(() => {
+  bus.off('cohort-context', onCohortContext)
+  bus.off('husband-context', onHusbandContext)
+  bus.off('hex-select', onHexSelect)
+  bus.off('hex-clear', onHexClear)
 })
 </script>
 
 <style lang="less" scoped>
-.section { margin-bottom: 10px; }
-h3 { font-size: 10px; color: #444; margin-bottom: 4px; letter-spacing: 0.5px; text-transform: uppercase; }
-.slider-row {
-  display: grid;
-  grid-template-columns: 1fr 100px 32px;
-  gap: 8px; align-items: center; padding: 2px 0;
+.section-head {
+  font-size: 10px; color: #444; margin: 0 0 4px 0;
+  letter-spacing: 0.5px; text-transform: uppercase;
 }
-.slider-row .lbl { color: #1a1a1a; }
-.slider-row input[type="range"] { width: 100%; height: 14px; }
-.slider-row .val { text-align: right; font-variant-numeric: tabular-nums; }
-
-.motifs { display: flex; flex-direction: column; gap: 4px; }
-.motifs li {
-  &.off { opacity: 0.45; }
+.ctx-tag { color: #6b5736; font-style: italic; }
+.cell-chip {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid #c8bfa8;
+  border-radius: 8px;
+  background: #f5f1e8;
+  color: #4a3f2a;
+  font-variant-numeric: tabular-nums;
 }
-.motifs li label {
-  display: grid;
-  grid-template-columns: auto auto 1fr;
-  gap: 8px; align-items: center;
-  font-size: 11px; cursor: pointer;
-  padding: 4px 6px; border-radius: 3px;
-  &:hover { background: #faf4e6; }
+.cell-save-btn {
+  margin-left: 4px;
+  font-size: 10px;
+  padding: 1px 6px;
+  border: 1px solid #5a7a90;
+  border-radius: 3px;
+  background: #eef3f7;
+  color: #1a1a1a;
+  cursor: pointer;
+  &:hover:not(:disabled) { background: #ffe082; border-color: #d4a85d; }
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
 }
-.motif-text { display: flex; flex-direction: column; }
-.motif-title { font-size: 11px; font-weight: 600; color: #1a1a1a; }
-.footer { margin-top: 8px; }
-.ok { color: #0f6e56 !important; }
-code { background: #f0efe9; padding: 0 4px; border-radius: 2px; font-size: 9px; }
+section.macro { margin-bottom: 12px; }
+.macro-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  height: 180px;
+  & > * { flex: 1 1 0; min-width: 0; height: 100%; }
+}
 </style>

@@ -1,9 +1,16 @@
 <template>
   <div class="arena-card"
-       :class="{ dim: agent.eliminated, pick: isPicked }">
+       :class="{ dim: agent.eliminated, pick: isPicked,
+                 'gt-reveal-on': revealGT && agent.hgt_label != null,
+                 'gt-pair': revealGT && agent.hgt_label === 1,
+                 'gt-neg':  revealGT && agent.hgt_label === 0 }">
     <!-- Header -->
     <div class="card-head">
       <span class="chip c">c-{{ agent.id }}</span>
+      <span v-if="revealGT && agent.hgt_label === 1" class="gt-badge gt"
+            title="ground-truth wife in the cohort JSON">GT</span>
+      <span v-else-if="revealGT && agent.hgt_label === 0" class="gt-badge neg"
+            title="hard-negative candidate sampled within the cohort">neg</span>
       <span class="score" :class="scoreClass(agent.target_score)">
         {{ formatScore(agent.target_score) }}
       </span>
@@ -21,7 +28,6 @@
     <div class="card-pre tiny muted">
       HGT {{ agent.pre_score?.toFixed?.(2) ?? '—' }}
       <template v-if="agent.score_gap != null"> · gap {{ agent.score_gap.toFixed(2) }}</template>
-      <template v-if="agent.hgt_label != null"> · {{ agent.hgt_label === 1 ? 'GT pair' : 'hard neg' }}</template>
     </div>
 
     <!-- Streaming feed / reasons -->
@@ -73,6 +79,9 @@
               @click="$emit('boost', agent)">boost</button>
       <button class="tiny linkbtn"
               @click="$emit('penalise', agent)">penalise</button>
+      <button class="tiny linkbtn life-btn"
+              title="open life-history popup (events + income chart)"
+              @click="$emit('life', agent)">🔍 life</button>
       <button class="tiny linkbtn convo-toggle"
               @click="convoOpen = !convoOpen"
               :title="convoOpen ? 'collapse conversation' : 'expand conversation'">
@@ -108,9 +117,10 @@ import { ref, computed, nextTick, watch } from 'vue'
 const props = defineProps({
   agent: { type: Object, required: true },
   isPicked: { type: Boolean, default: false },
+  revealGT: { type: Boolean, default: false },
 })
 
-defineEmits(['accept', 'eliminate', 'penalise', 'boost'])
+defineEmits(['accept', 'eliminate', 'penalise', 'boost', 'life'])
 
 const convoOpen = ref(false)
 const personaOpen = ref(false)
@@ -205,8 +215,25 @@ watch(convoOpen, (open) => {
   background: #fff; border: 1px solid #ddd; border-radius: 4px;
   padding: 5px 6px; font-size: 11px;
   display: flex; flex-direction: column; gap: 3px;
+  border-left-width: 4px;
   &.dim { opacity: 0.4; }
   &.pick { border-color: #0f6e56; box-shadow: 0 0 0 2px #0f6e5644; }
+  &.gt-reveal-on.gt-pair {
+    border-left-color: #0f6e56;
+    background: #f0faf5;
+  }
+  &.gt-reveal-on.gt-neg {
+    border-left-color: #993c1d;
+    background: #fbf3f0;
+  }
+}
+.gt-badge {
+  font-size: 9px; font-weight: 700;
+  padding: 1px 5px; border-radius: 2px;
+  font-family: Monaco, monospace;
+  letter-spacing: 0.5px;
+  &.gt  { background: #0f6e56; color: #fff; }
+  &.neg { background: #993c1d; color: #fff; }
 }
 .card-head { display: flex; align-items: center; gap: 5px; }
 .card-head .score {

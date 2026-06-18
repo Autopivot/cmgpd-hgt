@@ -73,6 +73,77 @@ DEFAULT_K_MAX = 10
 OUT_DIR = Path(__file__).resolve().parent
 
 
+def _anchor_path(ablated: bool) -> Path:
+    """1882 MDS-frame anchor — separate per ablation since the scorer head
+    differs between the two checkpoints, so their z_proj spaces aren't
+    interchangeable."""
+    suffix = "ablated" if ablated else "unablated"
+    return OUT_DIR / f"anchor_1882_{suffix}.npz"
+
+
+def _save_anchor(path: Path, scaler, pca, z_norm_test, z_norm_train,
+                 mds_test, mds_train) -> None:
+    import io
+    import joblib
+    buf_s = io.BytesIO(); joblib.dump(scaler, buf_s)
+    buf_p = io.BytesIO(); joblib.dump(pca, buf_p)
+    np.savez(
+        path,
+        scaler_bytes=np.frombuffer(buf_s.getvalue(), dtype=np.uint8),
+        pca_bytes=np.frombuffer(buf_p.getvalue(), dtype=np.uint8),
+        z_norm_test=z_norm_test.astype(np.float32),
+        z_norm_train=z_norm_train.astype(np.float32),
+        mds_test=mds_test.astype(np.float32),
+        mds_train=mds_train.astype(np.float32),
+    )
+    log.info("saved 1882 anchor → %s (%d test + %d train)",
+             path.name, mds_test.shape[0], mds_train.shape[0])
+
+
+def _load_anchor(path: Path):
+    if not path.exists():
+        return None
+    import io
+    import joblib
+    arr = np.load(path, allow_pickle=False)
+    scaler = joblib.load(io.BytesIO(arr["scaler_bytes"].tobytes()))
+    pca = joblib.load(io.BytesIO(arr["pca_bytes"].tobytes()))
+    return {
+        "scaler": scaler, "pca": pca,
+        "z_norm_test": np.asarray(arr["z_norm_test"]),
+        "z_norm_train": np.asarray(arr["z_norm_train"]),
+        "mds_test": np.asarray(arr["mds_test"]),
+        "mds_train": np.asarray(arr["mds_train"]),
+    }
+
+
+def _project_via_anchor(z_proj, z_train_proj, anchor):
+    """Map a non-1882 cohort's z_proj onto the 1882 MDS frame.
+
+    1. Use the anchor's saved scaler + PCA so the new year's vectors land in
+       the same PCA basis as 1882.
+    2. KNN-regress (anchor PCA → anchor MDS) and predict for the new PCA
+       coords. KNN with k=8 distance-weighted is a smooth interpolant of the
+       MDS embedding without re-running the (non-transformable) MDS fit.
+    3. train_ref_coords stays fixed at the anchor's saved MDS-train coords
+       so the V3 contour is byte-identical across years.
+    """
+    from sklearn.neighbors import KNeighborsRegressor
+    scaler = anchor["scaler"]; pca = anchor["pca"]
+    anchor_z_norm = np.concatenate([anchor["z_norm_test"], anchor["z_norm_train"]], axis=0)
+    anchor_pca = pca.transform(anchor_z_norm)
+    anchor_mds = np.concatenate([anchor["mds_test"], anchor["mds_train"]], axis=0)
+    knn = KNeighborsRegressor(n_neighbors=min(8, anchor_pca.shape[0]),
+                              weights="distance")
+    knn.fit(anchor_pca, anchor_mds)
+
+    z_new_test_norm = scaler.transform(z_proj)
+    z_pca_test = pca.transform(z_new_test_norm)
+    mds_test = knn.predict(z_pca_test)
+    train_ref = anchor["mds_train"].copy()
+    return mds_test, train_ref, z_pca_test
+
+
 def _era_for_year(year: int) -> str:
     if year in (1882, 1885, 1888):
         return "regular"
@@ -561,32 +632,53 @@ def precompute_real(year: int, ablated: bool, device: str | None = None) -> dict
     else:
         z_train_proj = np.zeros((0, z_proj.shape[1]), dtype=np.float32)
 
-    # Joint PCA + MDS on (test pairs ∪ train reference). This yields a
-    # single shared 2-D embedding so the heatmap and the cohort glyphs
-    # use the same coordinate system.
-    log.info("joint PCA -> MDS over %d test + %d train pairs",
-             z_proj.shape[0], z_train_proj.shape[0])
-    z_all = np.concatenate([z_proj, z_train_proj], axis=0)
-    scaler = StandardScaler()
-    z_norm_all = scaler.fit_transform(z_all)
-    n_components = min(PCA_COMPONENTS, z_norm_all.shape[0], z_norm_all.shape[1])
-    pca = PCA(n_components=n_components, random_state=0)
-    z_pca_all = pca.fit_transform(z_norm_all)
-    from scipy.spatial.distance import pdist, squareform
-    diss = squareform(pdist(z_pca_all, metric="euclidean"))
-    diss = (diss + diss.T) * 0.5  # exact symmetric
-    np.fill_diagonal(diss, 0.0)
-    mds = MDS(n_components=2, n_init=1, max_iter=200,
-              dissimilarity="precomputed",
-              random_state=0, normalized_stress="auto")
-    mds_coords_all = mds.fit_transform(diss)
-    n_test = z_proj.shape[0]
-    mds_coords = mds_coords_all[:n_test]
-    train_ref_coords = mds_coords_all[n_test:]
+    # MDS-frame strategy:
+    #   • year == 1882: fit PCA + MDS jointly on (test ∪ train_ref) and
+    #     persist the (scaler, PCA, z_norm, mds) anchor.
+    #   • year != 1882: load 1882's anchor (matched on ablation) and
+    #     project this year's z_proj into that frame via KNN-regression on
+    #     PCA → MDS. train_ref_coords carries through verbatim, so the V3
+    #     contour is identical across years.
+    anchor_p = _anchor_path(ablated)
+    anchor = None if year == 1882 else _load_anchor(anchor_p)
+    if anchor is not None:
+        log.info("projecting year=%d onto 1882 anchor MDS frame (%s)",
+                 year, anchor_p.name)
+        mds_coords, train_ref_coords, z_pca = _project_via_anchor(
+            z_proj, z_train_proj, anchor,
+        )
+    else:
+        log.info("joint PCA -> MDS over %d test + %d train pairs",
+                 z_proj.shape[0], z_train_proj.shape[0])
+        z_all = np.concatenate([z_proj, z_train_proj], axis=0)
+        scaler = StandardScaler()
+        z_norm_all = scaler.fit_transform(z_all)
+        n_components = min(PCA_COMPONENTS, z_norm_all.shape[0], z_norm_all.shape[1])
+        pca = PCA(n_components=n_components, random_state=0)
+        z_pca_all = pca.fit_transform(z_norm_all)
+        from scipy.spatial.distance import pdist, squareform
+        diss = squareform(pdist(z_pca_all, metric="euclidean"))
+        diss = (diss + diss.T) * 0.5
+        np.fill_diagonal(diss, 0.0)
+        mds = MDS(n_components=2, n_init=1, max_iter=200,
+                  dissimilarity="precomputed",
+                  random_state=0, normalized_stress="auto")
+        mds_coords_all = mds.fit_transform(diss)
+        n_test = z_proj.shape[0]
+        mds_coords = mds_coords_all[:n_test]
+        train_ref_coords = mds_coords_all[n_test:]
+        z_pca = z_pca_all[:n_test]
+        if year == 1882:
+            _save_anchor(
+                anchor_p, scaler, pca,
+                z_norm_test=z_norm_all[:n_test],
+                z_norm_train=z_norm_all[n_test:],
+                mds_test=mds_coords,
+                mds_train=train_ref_coords,
+            )
 
     # Cluster labels are still scoped to the test pairs only — the heatmap
     # is purely background context, not a cluster member.
-    z_pca = z_pca_all[:n_test]
     cluster_labels, k_clusters = _run_xmeans_or_kmeans(z_pca, DEFAULT_K_MAX)
 
     # Lineage lookup (uses the original graph, not the time-restricted subgraph).

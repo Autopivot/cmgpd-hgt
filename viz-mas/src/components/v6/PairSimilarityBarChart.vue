@@ -1,0 +1,335 @@
+<template>
+  <div class="pair-sim-root">
+    <div v-if="!husband || !husband.husband_id" class="empty-state">
+      select a husband in V4 to see candidate similarity
+    </div>
+    <template v-else>
+      <div class="chart-row">
+        <div class="chart-host" ref="hostRef">
+          <svg ref="svgRef" class="bar-svg"></svg>
+          <div v-if="loading" class="hint">loading…</div>
+          <div v-else-if="!candidates || candidates.length === 0" class="hint">
+            no candidates
+          </div>
+        </div>
+        <div class="metric-picker">
+          <button
+            v-for="m in METRICS"
+            :key="m.key"
+            class="metric-btn"
+            :class="{ on: metric === m.key }"
+            @click="metric = m.key"
+            :title="m.label"
+          >{{ m.short }}</button>
+        </div>
+      </div>
+    </template>
+  </div>
+</template>
+
+<script setup>
+import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import * as d3 from 'd3'
+import axios from 'axios'
+import bus from '../../utils/eventbus.js'
+
+const props = defineProps({
+  husband: { type: Object, default: null },
+  candidates: { type: Array, default: () => [] },
+})
+
+const METRICS = [
+  { key: 'paternal_lineage_proximity', label: 'paternal lineage proximity', short: 'paternal' },
+  { key: 'shared_siblings',            label: 'shared siblings',             short: 'siblings' },
+  { key: 'same_household_history',     label: 'same household history',      short: 'household' },
+  { key: 'same_banner',                label: 'same banner',                  short: 'banner' },
+]
+
+const metric = ref('paternal_lineage_proximity')
+const loading = ref(false)
+const hostRef = ref(null)
+const svgRef = ref(null)
+
+// Cache: `${husband_id}|${wife_id}` → features object | { _err: true }
+const cache = new Map()
+// Reactive bag of fetched feature rows for the current husband.
+const features = ref(new Map())
+
+const http = axios.create({ baseURL: '/api', timeout: 30000 })
+
+async function fetchPair(hid, wid) {
+  const k = `${hid}|${wid}`
+  if (cache.has(k)) return cache.get(k)
+  try {
+    const r = await http.get(`/pair-features/${encodeURIComponent(hid)}/${encodeURIComponent(wid)}`)
+    cache.set(k, r.data)
+    return r.data
+  } catch (e) {
+    const stub = { _err: true }
+    cache.set(k, stub)
+    return stub
+  }
+}
+
+async function fetchAll() {
+  const h = props.husband
+  if (!h || h.husband_id == null) return
+  const cands = props.candidates || []
+  loading.value = true
+  const hid = h.husband_id
+  const results = await Promise.all(cands.map(c => fetchPair(hid, c.wife_id)))
+  const next = new Map()
+  cands.forEach((c, i) => { next.set(c.wife_id, results[i]) })
+  features.value = next
+  loading.value = false
+  await nextTick()
+  draw()
+}
+
+// paternal/sib are continuous; household + banner are binary (yes/no).
+const BINARY_METRICS = new Set(['same_household_history', 'same_banner'])
+function isBinaryMetric() { return BINARY_METRICS.has(metric.value) }
+
+function valueFor(wifeId) {
+  const f = features.value.get(wifeId)
+  if (!f || f._err) return { value: 0, missing: true }
+  let v = 0
+  switch (metric.value) {
+    case 'paternal_lineage_proximity':
+      v = Number(f.paternal_lineage_proximity ?? f.paternal_proximity ?? 0); break
+    case 'shared_siblings':
+      v = Number(f.shared_siblings ?? 0); break
+    case 'same_household_history': {
+      const raw = f.same_household_history ?? f.household_share
+      if (raw === null || raw === undefined) return { value: 0, missing: true }
+      v = Number(raw) > 0 ? 1 : 0; break
+    }
+    case 'same_banner': {
+      if (f.same_banner === null || f.same_banner === undefined) {
+        return { value: 0, missing: true }
+      }
+      v = f.same_banner ? 1 : 0; break
+    }
+  }
+  if (!Number.isFinite(v)) v = 0
+  return { value: v, missing: false }
+}
+
+function draw() {
+  const host = hostRef.value
+  const svgEl = svgRef.value
+  if (!host || !svgEl) return
+  const w = Math.max(120, host.clientWidth)
+  const h = Math.max(180, host.clientHeight)
+  const svg = d3.select(svgEl)
+  svg.selectAll('*').remove()
+  svg.attr('width', w).attr('height', h)
+
+  const cands = props.candidates || []
+  if (!cands.length) return
+
+  const rows = cands.map(c => {
+    const v = valueFor(c.wife_id)
+    return { wife_id: c.wife_id, value: v.value, missing: v.missing }
+  })
+  rows.sort((a, b) => d3.descending(a.value, b.value))
+
+  const margin = { top: 8, right: 8, bottom: 36, left: 36 }
+  const innerW = Math.max(20, w - margin.left - margin.right)
+  const innerH = Math.max(20, h - margin.top - margin.bottom)
+  const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`)
+
+  const binary = isBinaryMetric()
+  const maxV = binary ? 1 : (d3.max(rows, d => d.value) || 1)
+  const x = d3.scaleBand()
+    .domain(rows.map(r => String(r.wife_id)))
+    .range([0, innerW])
+    .padding(0.2)
+  const y = d3.scaleLinear().domain([0, Math.max(1e-9, maxV)]).range([innerH, 0])
+
+  // X axis (candidate IDs along the bottom, rotated for legibility).
+  const xAxisG = g.append('g')
+    .attr('transform', `translate(0,${innerH})`)
+    .call(d3.axisBottom(x))
+  xAxisG.selectAll('text')
+    .attr('font-size', 9).attr('fill', '#222')
+    .attr('transform', 'rotate(-32) translate(-6,0)')
+    .style('text-anchor', 'end')
+  xAxisG.selectAll('path,line').attr('stroke', '#bbb')
+
+  // Y axis (metric value).
+  const yAxis = binary
+    ? d3.axisLeft(y).tickValues([0, 1]).tickFormat(d => d === 1 ? 'yes' : 'no')
+    : d3.axisLeft(y).ticks(4).tickFormat(d3.format('.2~f'))
+  g.append('g')
+    .call(yAxis)
+    .call(s => s.selectAll('text').attr('font-size', 9).attr('fill', '#444'))
+    .call(s => s.selectAll('path,line').attr('stroke', '#bbb'))
+
+  // Tooltip
+  let tip = d3.select(host).select('.bar-tip')
+  if (tip.empty()) {
+    tip = d3.select(host).append('div').attr('class', 'bar-tip')
+  }
+  tip.style('opacity', 0)
+
+  g.selectAll('rect.candidate-bar')
+    .data(rows, d => d.wife_id)
+    .enter()
+    .append('rect')
+    .attr('class', 'candidate-bar')
+    .attr('x', d => x(String(d.wife_id)))
+    .attr('y', d => y(d.value))
+    .attr('width', x.bandwidth())
+    .attr('height', d => Math.max(0.5, innerH - y(d.value)))
+    .attr('fill', '#0f6e56')
+    .attr('opacity', d => d.missing ? 0.35 : 1)
+    .on('mousemove', (event, d) => {
+      const [mx, my] = d3.pointer(event, host)
+      tip.style('left', `${mx + 10}px`)
+        .style('top', `${my + 8}px`)
+        .style('opacity', 1)
+        .html(d.missing
+          ? `wife_id=${d.wife_id}<br>?`
+          : `wife_id=${d.wife_id}<br>${d3.format('.4~f')(d.value)}`)
+    })
+    .on('mouseleave', () => { tip.style('opacity', 0) })
+
+  // Missing-value "?" labels (centered above x-axis tick)
+  g.selectAll('text.miss-label')
+    .data(rows.filter(r => r.missing))
+    .enter()
+    .append('text')
+    .attr('class', 'miss-label')
+    .attr('x', d => x(String(d.wife_id)) + x.bandwidth() / 2)
+    .attr('y', innerH - 4)
+    .attr('text-anchor', 'middle')
+    .attr('font-size', 10)
+    .attr('fill', '#a33')
+    .text('?')
+
+  // Value labels above bar
+  g.selectAll('text.val-label')
+    .data(rows.filter(r => !r.missing))
+    .enter()
+    .append('text')
+    .attr('class', 'val-label')
+    .attr('x', d => x(String(d.wife_id)) + x.bandwidth() / 2)
+    .attr('y', d => y(d.value) - 3)
+    .attr('text-anchor', 'middle')
+    .attr('font-size', 9)
+    .attr('fill', '#333')
+    .text(d => binary ? (d.value === 1 ? 'yes' : 'no') : d3.format('.2~f')(d.value))
+}
+
+function onPanelResized({ ids } = {}) {
+  if (Array.isArray(ids) && !ids.includes('v6')) return
+  draw()
+}
+function resizeHandler() { draw() }
+
+// Re-fetch only when husband_id changes (or candidates list changes).
+watch(
+  () => [props.husband?.husband_id, (props.candidates || []).map(c => c.wife_id).join(',')],
+  () => { fetchAll() },
+  { immediate: false },
+)
+
+// Re-render (no fetch) when metric changes.
+watch(metric, () => { draw() })
+
+onMounted(() => {
+  bus.on('panel-resized', onPanelResized)
+  window.addEventListener('resize', resizeHandler)
+  if (props.husband?.husband_id) fetchAll()
+})
+onUnmounted(() => {
+  bus.off('panel-resized', onPanelResized)
+  window.removeEventListener('resize', resizeHandler)
+})
+</script>
+
+<style scoped lang="less">
+.pair-sim-root {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+.empty-state {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #888;
+  font-size: 11px;
+  font-style: italic;
+}
+.chart-row {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 6px;
+}
+.metric-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 0 0 auto;
+  padding: 2px 0;
+  align-self: flex-start;
+}
+.metric-btn {
+  font-size: 10px;
+  padding: 2px 6px;
+  border: 1px solid #888;
+  border-radius: 3px;
+  background: #f5f5f5;
+  color: #1a1a1a;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  &:hover { background: #fff3c4; border-color: #d4a85d; }
+  &.on {
+    background: #ffe082;
+    border-color: #d4a85d;
+    font-weight: 700;
+  }
+}
+.chart-host {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+.bar-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.hint {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  color: #888;
+  font-size: 11px;
+  font-style: italic;
+}
+:deep(.bar-tip) {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(20, 20, 20, 0.92);
+  color: #fff;
+  font-size: 10px;
+  padding: 3px 6px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 80ms;
+  white-space: nowrap;
+  z-index: 10;
+}
+</style>

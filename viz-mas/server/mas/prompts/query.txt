@@ -17,6 +17,7 @@ CANDIDATE RESUMES
 -----------------
 {candidate_block}
 
+{cell_rules_block}
 {hint_block}
 
 TASK

@@ -1,0 +1,32 @@
+You are condensing a real Qing-dynasty Liaoning bannerman's life into a single
+short prose paragraph for a historian's quick read. Use ONLY the evidence
+below; do not invent dates, places, kin, or events the table does not
+support. Where evidence is sparse, write conservatively.
+
+PERSON
+------
+- person_id: {person_id}
+- role: {role}              # "target" (husband) | "candidate" (wife) | "?"
+- birth year: {birth_year}
+- cohort year of interest:  {cohort_year}
+
+LIFE EVENTS (DS0003, year — event_1 / event_2)
+{events_block}
+
+ANNUAL INCOME (DS0003, year — value [low/mid/high])
+{income_block}
+
+TASK
+----
+Write ONE flowing paragraph (50–110 English words, NO bullet list) that
+turns the events and income trajectory into natural language. Mention:
+  * birth year if known,
+  * the cohort year as a temporal anchor,
+  * any death / migration / marriage events ON the register,
+  * the income arc qualitatively (steady, rising, declining, late-life
+    drop, etc.) — never quote raw numbers.
+
+Respond with ONLY a JSON object:
+{{
+  "narrative": "<the paragraph>"
+}}

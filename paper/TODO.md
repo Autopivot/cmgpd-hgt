@@ -120,7 +120,7 @@ Last audited: against commit `e7dcede` on `feat/v5-unit4-real-qwen`.
 | Key | Represents | Replacement path |
 |---|---|---|
 | `cmgpd-ln-2010` | CMGPD-LN ICPSR 27063 dataset descriptor | DOI 10.3886/ICPSR27063 + the canonical Lee & Campbell descriptor paper |
-| `wang2007muxia` | muxia historiography (mother's house) | placeholder — find a peer-reviewed source on 母家 in late-imperial Chinese history |
+| `wang2007mujia` | mujia historiography (mother's house) | placeholder — find a peer-reviewed source on 母家 in late-imperial Chinese history |
 | `mann2002precious` | late-Qing women's history | likely Mann *Precious Records* (1997) — verify date & venue |
 | `hu2020hgt` | HGT — Heterogeneous Graph Transformer | WWW 2020, easy to fetch via DOI |
 | `zhang2018seal` | SEAL link prediction | NeurIPS 2018, easy to fetch |

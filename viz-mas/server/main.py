@@ -56,6 +56,7 @@ from .mas.profiles import get_profile as mas_get_profile
 # replacement; delete after unit 5 lands.
 # from .mas.negotiator import negotiate as mas_negotiate  # noqa: ERA001
 from .mas.negotiator_rounds import mas_negotiate_rounds
+from .mas.hint_router import parse_and_dispatch as mas_hint_parse_and_dispatch
 from .mas.state import state as mas_state
 from .mas.ws_broker import broker as mas_broker
 
@@ -79,6 +80,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- v6 auxiliary routers ---
+from .api.pair_features_endpoint import router as pair_features_router  # noqa: E402
+app.include_router(pair_features_router)
+from .api.motif_endpoint import router as motif_router  # noqa: E402
+app.include_router(motif_router)
 
 # ── Cohort cache ──────────────────────────────────────────────────────
 _cohort_cache: dict[tuple[int, str], dict] = {}
@@ -173,6 +180,15 @@ def _shap_components(pair: dict) -> list[dict[str, Any]]:
     return parts
 
 
+# --- v6 auxiliary routers ---
+from .api.macro_endpoint import router as macro_router
+app.include_router(macro_router)
+from .api.cell_rules_endpoint import router as cell_rules_router  # noqa: E402
+app.include_router(cell_rules_router)
+from .api.narrative_text_endpoint import router as narrative_text_router  # noqa: E402
+app.include_router(narrative_text_router)
+
+
 # ── HTTP endpoints ────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
@@ -238,7 +254,14 @@ def api_narrative(person_id: str, year: int = Query(..., ge=1700, le=2000)):
     only normalises the person id and forwards `start`/`end` to it.
     Returns 404 when DS0003 has neither events nor income for this id.
     """
-    birth = get_birth_year(person_id)
+    # Canonical birth-year policy: DS0001 BIRTHYEAR (admin) first, DS0003
+    # birth-event year as fallback. Avoids the inconsistency where the V4
+    # profile popup and V5 husband chip read DS0001 while the V5 narrative
+    # row + income chart used to read DS0003 — for the same person.
+    profile = mas_get_profile(person_id)
+    birth = (profile.get("birth_year") if isinstance(profile, dict) else None)
+    if birth is None:
+        birth = get_birth_year(person_id)
     start = birth if birth is not None else year - 80
     events = load_events(person_id, start, year)
     income = load_income(person_id, start, year)
@@ -264,6 +287,54 @@ def api_profile(person_id: str):
     so the UI behaves identically with or without the backend.
     """
     return mas_get_profile(person_id)
+
+
+@app.get("/api/kinship/{person_id}")
+def api_kinship(person_id: str, k: int = 1, hide_children: bool = False):
+    """Return the focal person's k-hop person-only family subgraph
+    (parents, children, siblings) for the V6 candidate-graph UI.
+    Output ids always carry the "P" prefix.
+
+    ``hide_children=true`` suppresses the focal→child edges (V6 sets
+    this so a candidate sharing a child with the husband doesn't
+    leak the matching answer)."""
+    from .data.kinship_loader import khop_kinship
+    return khop_kinship(person_id, k=k, hide_children=hide_children)
+
+
+class _KinshipMultiBody(BaseModel):
+    person_ids: list[str]
+    k: int = 1
+    hide_children: bool = False
+
+
+@app.post("/api/kinship/multi")
+def api_kinship_multi(body: _KinshipMultiBody):
+    """Batched kinship lookup: merges the per-person subgraphs of every
+    id in `person_ids`, deduplicating nodes by id and edges by
+    (source, target, type). Used by V6 to render husband + top-K
+    candidates in a single canvas. Set ``hide_children=true`` (V6 always
+    does) to suppress focal→child edges that would leak the spouse."""
+    from .data.kinship_loader import khop_kinship_multi
+    return khop_kinship_multi(body.person_ids, k=body.k, hide_children=body.hide_children)
+
+
+@app.get("/api/seal/{husband_id}/{wife_id}")
+def api_seal_subgraph(husband_id: str, wife_id: str):
+    """Return the SEAL motif subgraph for a (husband, wife) pair.
+
+    Currently a STUB — returns one of four canonical motif exemplars
+    deterministically per pair. Schema v1; see `server/data/seal_loader.py`
+    for the strict output contract and the migration notes for the real
+    DRNL+motif-classification pipeline.
+
+    Backs V6's per-edge sub-window: the user clicks any r_hw edge
+    (potential dashed or confirmed solid) and gets a focused mini-graph
+    showing the structural pattern that justifies (or would justify) the
+    match.
+    """
+    from .data.seal_loader import get_seal_subgraph
+    return get_seal_subgraph(husband_id, wife_id)
 
 
 @app.get("/api/shap/{pair_id}")
@@ -314,10 +385,12 @@ class _NegotiateStartBody(BaseModel):
     year: int
     ablation: str = "ablated"
     auto_commit: bool = False
+    cell_rules: dict | None = None
 
 
 async def _run_orchestrator(
     husband_id: str, year: int, ablation: str, auto_commit: bool,
+    cell_rules: dict | None = None,
 ) -> None:
     """Background entrypoint: marks the session active for the duration of
     the orchestrator run so /advance can answer 404 vs 200 correctly, and
@@ -335,6 +408,7 @@ async def _run_orchestrator(
             advance_event=mas_state.get_advance_event(husband_id),
             hint_queue=mas_state.get_hint_queue(husband_id),
             auto_commit=auto_commit,
+            cell_rules=cell_rules,
         )
     except Exception as e:   # noqa: BLE001
         log.exception("orchestrator failed for %s: %s", husband_id, e)
@@ -363,7 +437,10 @@ async def api_negotiate_start(husband_id: str, body: _NegotiateStartBody):
     # this 200 doesn't see "no active session".
     mas_state.mark_session_active(husband_id)
     asyncio.create_task(
-        _run_orchestrator(husband_id, body.year, body.ablation, body.auto_commit),
+        _run_orchestrator(
+            husband_id, body.year, body.ablation, body.auto_commit,
+            cell_rules=body.cell_rules,
+        ),
     )
     return {
         "status": "started",
@@ -430,6 +507,37 @@ async def api_negotiate_hint(husband_id: str, body: _HintBody):
     await mas_state.get_hint_queue(husband_id).put(payload)
     mas_state.add_hint(husband_id, body.text, body.role)
     return {"status": "ok"}
+
+
+class _HintParseBody(BaseModel):
+    session_id: str
+    free_text: str
+    context: dict | None = None
+
+
+@app.post("/api/hint/parse")
+async def api_hint_parse(body: _HintParseBody):
+    """Free-text NLP hint router.
+
+    Sends `free_text` to Qwen with a strict action-schema system prompt,
+    parses the response into structured actions (modify_persona_field,
+    modify_score, eliminate, inject_directive, noop_with_reason), and
+    dispatches each one against the in-memory MAS session for
+    `session_id` (a husband id). Falls back to a single inject_directive
+    on any LLM/parse failure so the user's guidance is never lost.
+    """
+    ctx = body.context or {}
+    log.info("hint_parse session=%s text=%r", body.session_id, body.free_text[:200])
+    result = await mas_hint_parse_and_dispatch(
+        session_id=body.session_id,
+        free_text=body.free_text,
+        context=ctx,
+    )
+    log.info(
+        "hint_parse dispatched %d action(s) for %s",
+        len(result.get("actions_applied", [])), body.session_id,
+    )
+    return result
 
 
 @app.get("/api/negotiate/{husband_id}/hints")

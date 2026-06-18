@@ -1,7 +1,7 @@
 <template>
   <div class="panel battle">
     <div class="panel-head">
-      <span>V5 · Agent Arena · MAS Negotiation</span>
+      <span>V5: MAS View</span>
       <span class="actions">
         <span class="tiny muted" v-if="husband">t-{{ husband.id }}</span>
         <span v-if="currentRound > 0" class="round-chip tiny" :class="{ paused: isPaused }">
@@ -14,6 +14,11 @@
           {{ advancing ? '…' : 'Approve & Advance →' }}
         </button>
         <span v-if="streamState" class="stream-state tiny" :class="streamState">{{ streamState }}</span>
+        <button class="btn ghost gt-reveal" :class="{ on: revealGT }"
+                @click="revealGT = !revealGT"
+                title="Reveal which candidate is the ground-truth wife">
+          {{ revealGT ? '👁 GT on' : '👁 GT off' }}
+        </button>
         <button class="btn ghost" :disabled="!husband || running" @click="startBattle">▶ arena</button>
         <button class="fs-btn" @click="bus.emit('full-screen', 'v5')" title="Full screen">⛶</button>
       </span>
@@ -34,10 +39,21 @@
                 · com{{ husbandProfile.community_id ?? '?' }}
               </span>
               <span class="tiny muted" v-else>fetching profile…</span>
+              <button class="tiny linkbtn life-btn-target"
+                      title="open life-history popup for this husband"
+                      @click="openLifePopup({ id: husband.id, role: 'husband', profile: husbandProfile })">
+                🔍 life
+              </button>
             </div>
             <div class="cohort-info tiny muted">
               cohort {{ appState.year }} ({{ appState.ablation }}) ·
               {{ candidates.length }} top candidates
+              <span v-if="revealGT && gtCandidate" class="gt-spouse" title="cohort JSON ground-truth wife">
+                · 🟢 GT spouse: c-{{ gtCandidate.id }}
+              </span>
+              <span v-else-if="revealGT && agents.length" class="gt-spouse-missing tiny muted">
+                · GT spouse not in current candidates
+              </span>
             </div>
           </div>
         </div>
@@ -107,6 +123,21 @@
           </div>
           <div v-if="!systemLog.length" class="muted tiny" style="padding:4px 6px">no messages</div>
         </div>
+        <!-- Directives applied by the natural-language router. Populated by
+             nlpParseHint() — empty when only formal `@target: verb` hints
+             have been used. -->
+        <div v-if="directives.length" class="directives-panel">
+          <div class="tiny muted" style="padding:2px 6px">applied directives</div>
+          <ul class="directives-list">
+            <li v-for="(d, i) in directives" :key="i" class="directive-row tiny">
+              <span class="t muted">{{ d.ts }}</span>
+              <span class="m"><b>{{ d.action }}</b>
+                <span v-if="d.target"> · {{ d.target }}</span>
+                <span class="muted"> — {{ d.summary }}</span>
+              </span>
+            </li>
+          </ul>
+        </div>
         <div class="hint-input">
           <span class="verbs">
             <button class="verb" v-for="v in verbs" :key="v" @click="appendVerb(v)">{{ v }}</button>
@@ -132,14 +163,22 @@
             v-for="a in agents"
             :key="a.id"
             :agent="a"
+            :reveal-gt="revealGT"
             :is-picked="!!(accepted && accepted.id === a.id)"
             @accept="acceptOne($event)"
             @eliminate="eliminate($event)"
             @boost="boost($event, +0.5)"
             @penalise="boost($event, -0.5)"
+            @life="openLifePopup({ id: $event.id, role: 'candidate', profile: $event.profile })"
           />
         </div>
       </div>
+      <PersonLifePopup
+        :open="lifePopupPerson != null"
+        :person="lifePopupPerson"
+        :cohort-year="appState.year"
+        @close="lifePopupPerson = null"
+      />
 
       <!-- Final ranking footer -->
       <div v-if="finalRanking" class="row footer-row">
@@ -169,10 +208,11 @@
 import { ref, inject, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import {
   startNegotiation, openNegotiationStream, sendNegotiationHint, overrideMatch, getPair,
-  advanceRound, getNarrative,
+  advanceRound, getNarrative, nlpParseHint,
 } from '../api/client.js'
 import bus from '../utils/eventbus.js'
 import CandidateCard from './CandidateCard.vue'
+import PersonLifePopup from './v5/PersonLifePopup.vue'
 
 // SEAL motif IDs (subset emitted by the persona frame). Keep in sync with
 // the exemplar table in client.js (`RULE_DEFAULTS.motifs`).
@@ -184,12 +224,54 @@ const MOTIF_LABELS = {
 }
 
 const appState = inject('appState')
+
+// Reveal-GT toggle in panel head. Off by default — historians evaluating the
+// arena shouldn't see which candidate is the GT until they explicitly opt in.
+const REVEAL_GT_KEY = 'cmgpd-v5-reveal-gt'
+const revealGT = ref(localStorage.getItem(REVEAL_GT_KEY) === '1')
+watch(revealGT, v => { try { localStorage.setItem(REVEAL_GT_KEY, v ? '1' : '0') } catch {} })
+
+
+// V5 life-history popup target. Click 🔍 life on the husband row or any
+// candidate card to populate; PersonLifePopup auto-fetches narrative + LLM
+// paragraph and renders the income chart with a vertical cohort marker.
+const lifePopupPerson = ref(null)
+function openLifePopup(person) {
+  if (!person?.id) return
+  lifePopupPerson.value = person
+}
+
+// 1882-learned per-cell rule prior. V6 emits 'cell-rules-updated' whenever
+// the user picks a hex cell (transfer mode loads the saved profile; training
+// mode broadcasts the analyst's live edits). We forward this along with the
+// next /negotiate request so the backend MAS prompts can fold it in.
+const cellRules = ref(null)
+function onCellRulesUpdated(payload) {
+  if (!payload || (!payload.weights && !payload.motifs_enabled)) {
+    cellRules.value = null
+    return
+  }
+  cellRules.value = {
+    cell_id: payload.cell_id ?? null,
+    weights: payload.weights || {},
+    motifs_enabled: payload.motifs_enabled || {},
+  }
+}
+
 const husband = ref(null)        // { id, ... }
 const husbandProfile = ref(null) // { sex, birth_year, banner_id, ... } from "stage:profile"
 const candidates = ref([])       // raw candidates from "stage:filter"
 const agents = ref([])           // per-candidate cards (mirrors candidates + LLM scores)
+// Cohort-JSON GT wife (label===1) among currently loaded candidates. Drives
+// the V5 husband-row '🟢 GT spouse: c-XXX' chip when the 👁 GT toggle is on.
+const gtCandidate = computed(() => (agents.value || []).find(a => a.hgt_label === 1) || null)
 const finalRanking = ref(null)
 const accepted = ref(null)
+// Structured directives surfaced by the natural-language hint router. Each
+// entry is { action, target, params, raw } and is appended on every
+// successful /api/hint/parse fallback. Rendered in the V5 console so the
+// user can see what their freeform text actually got translated into.
+const directives = ref([])
 const running = ref(false)
 const streamState = ref('idle')
 const systemLog = ref([])
@@ -246,9 +328,27 @@ function onHexSelect(payload) {
 // when the user clicks a husband node. Route directly into loadHusband so V5
 // populates without requiring a V3 hex click first.
 function onPersonSelected(payload) {
-  if (payload?.role === 'husband' && payload?.id != null) {
-    loadHusband(payload.id)
+  if (payload?.role !== 'husband') return
+  if (payload?.id == null) {
+    // V4 cleared its husband — drop V5 state too so the panel doesn't sit
+    // on the previous person while V4 / V6 have already moved on.
+    closeWS()
+    husband.value = null
+    husbandProfile.value = null
+    candidates.value = []
+    agents.value = []
+    finalRanking.value = null
+    accepted.value = null
+    directives.value = []
+    streamState.value = 'idle'
+    currentRound.value = 0
+    currentRoundLabel.value = ''
+    isPaused.value = false
+    husbandNarrative.value = null
+    husbandPersona.value = null
+    return
   }
+  loadHusband(payload.id)
 }
 
 async function loadHusband(id) {
@@ -275,6 +375,8 @@ async function loadHusband(id) {
     const n = await getNarrative(id, year)
     if (n && (n.events?.length || n.income?.length)) husbandNarrative.value = n
   } catch (_) { /* offline-safe */ }
+  // V5 → V6 contract: husband loaded, no candidates yet (▶ arena not pressed).
+  bus.emit('cohort-context', { husband_id: id, candidate_ids: [] })
 }
 
 // ── Start the negotiation ──────────────────────────────────────────────
@@ -299,7 +401,9 @@ async function startBattle() {
       year: appState.year,
       ablation: appState.ablation,
       auto_commit: false,
+      cell_rules: cellRules.value,
     })
+    if (cellRules.value) logSys(`cell rules attached → bias from 1882 cell #${cellRules.value.cell_id ?? '?'}`, 'sys')
   } catch (e) {
     logSys(`POST /negotiate failed: ${e.message || e}`, 'err')
     streamState.value = 'error'
@@ -321,6 +425,8 @@ async function startBattle() {
 }
 
 function closeWS() {
+  // V5 → V6 contract: clear cohort context for downstream views.
+  bus.emit('cohort-context', { husband_id: null, candidate_ids: [] })
   if (activeWS) { try { activeWS.close() } catch {} ; activeWS = null }
   // Explicit reset — don't rely on ws.onclose firing, since a WS that
   // never finishes connecting won't ever dispatch 'close'.
@@ -353,6 +459,11 @@ function handleEvent(e) {
           eliminated: false,
         }))
         logSys(`filter: kept ${e.candidates.length}/${e.funnel.in_cohort}`)
+        // V5 → V6 contract: candidates populated.
+        bus.emit('cohort-context', {
+          husband_id: husband.value?.id ?? null,
+          candidate_ids: agents.value.map(a => a.id),
+        })
       }
       break
     case 'agent_prompt':
@@ -518,6 +629,25 @@ async function approveAndAdvance() {
   }
 }
 
+// Compose a short human-readable summary of an NLP-router action, e.g.
+//   { action: 'eliminate', target: 'c-P165718' }                 → "eliminate c-P165718"
+//   { action: 'modify_persona_field',
+//     target: 'c-P93553',
+//     params: { field: 'banner', value: 3 } }                    → "modify banner of c-P93553 → 3"
+function formatDirective(d) {
+  if (!d || typeof d !== 'object') return String(d)
+  const act = d.action || d.verb || 'op'
+  const tgt = d.target || d.subject || ''
+  const p = d.params || {}
+  if (act === 'modify_persona_field' && p.field !== undefined) {
+    return `modify ${p.field} of ${tgt} → ${p.value ?? ''}`
+  }
+  const extras = Object.keys(p).length
+    ? ' ' + Object.entries(p).map(([k, v]) => `${k}=${v}`).join(' ')
+    : ''
+  return `${act}${tgt ? ' ' + tgt : ''}${extras}`.trim()
+}
+
 async function sendHint() {
   const text = hint.value.trim()
   if (!text || !husband.value) return
@@ -531,10 +661,58 @@ async function sendHint() {
     else if (verb === 'boost' && a.target_score != null) a.target_score = Math.min(10, a.target_score + 0.5)
     else if (verb === 'penalise' && a.target_score != null) a.target_score = Math.max(0, a.target_score - 0.5)
   }
-  try { await sendNegotiationHint(husband.value.id, text, role, currentRound.value) }
-  catch (e) { logSys(`hint POST failed: ${e.message || e}`, 'err') }
-  hint.value = ''
+
+  // Formal-grammar fast path: a recognised verb (boost/penalise/eliminate/
+  // accept) is enough to treat the input as a structural directive and
+  // send it straight to the negotiator, skipping the LLM round-trip.
+  const formalMatched = verb !== ''
+
+  if (formalMatched) {
+    try { await sendNegotiationHint(husband.value.id, text, role, currentRound.value) }
+    catch (e) { logSys(`hint POST failed: ${e.message || e}`, 'err') }
+    hint.value = ''
+    logSys(`<b>hint</b> [${role}] ${text}`)
+    return
+  }
+
+  // Natural-language fallback: ask the backend router to translate the
+  // freeform text into structured actions, then surface each one in the
+  // chat log + directives list. On any failure, fall back to the legacy
+  // raw-text hint so the negotiator still hears the user.
   logSys(`<b>hint</b> [${role}] ${text}`)
+  try {
+    const ctx = {
+      candidate_ids: candidates.value.map(c => c.id),
+      current_round: currentRound.value,
+    }
+    const resp = await nlpParseHint(husband.value.id, text, ctx)
+    const actions = Array.isArray(resp?.actions) ? resp.actions : []
+    if (actions.length === 0) {
+      logSys('[router] no actions returned — forwarding as raw chat', 'sys')
+      try { await sendNegotiationHint(husband.value.id, text, role, currentRound.value) }
+      catch (e) { logSys(`hint POST failed: ${e.message || e}`, 'err') }
+    } else {
+      for (const a of actions) {
+        const summary = formatDirective(a)
+        logSys(`[router] ${summary}`, 'ok')
+        directives.value.push({
+          ts: new Date().toLocaleTimeString(),
+          action: a.action || a.verb || 'op',
+          target: a.target || a.subject || '',
+          params: a.params || {},
+          summary,
+          raw: text,
+        })
+      }
+    }
+  } catch (e) {
+    logSys(`[router] could not parse: ${e.message || e}`, 'err')
+    // Best-effort: still forward the raw text so the negotiator gets the
+    // user's intent even if the router is offline.
+    try { await sendNegotiationHint(husband.value.id, text, role, currentRound.value) }
+    catch (err) { logSys(`hint POST failed: ${err.message || err}`, 'err') }
+  }
+  hint.value = ''
 }
 
 function boost(a, delta) {
@@ -577,16 +755,21 @@ watch(() => `${appState.year}|${appState.ablation}`, () => {
   agents.value = []
   finalRanking.value = null
   accepted.value = null
+  directives.value = []
+  // V5 → V6 contract: cohort context resets when the user changes year/ablation.
+  bus.emit('cohort-context', { husband_id: null, candidate_ids: [] })
   closeWS()
 })
 
 onMounted(() => {
   bus.on('hex-select', onHexSelect)
   bus.on('person-selected', onPersonSelected)
+  bus.on('cell-rules-updated', onCellRulesUpdated)
 })
 onUnmounted(() => {
   bus.off('hex-select', onHexSelect)
   bus.off('person-selected', onPersonSelected)
+  bus.off('cell-rules-updated', onCellRulesUpdated)
   closeWS()
 })
 </script>
@@ -611,6 +794,17 @@ onUnmounted(() => {
 .log-line.lvl-err .m { color: #a40000; }
 .log-line.lvl-ok .m { color: #0f6e56; }
 .log-line.lvl-sys .m { color: #555; font-style: italic; }
+.directives-panel {
+  margin-top: 4px; background: #fffbe9; border: 1px solid #e3d27a;
+  border-radius: 3px; max-height: 80px; overflow: auto;
+}
+.directives-list { list-style: none; margin: 0; padding: 2px 6px; }
+.directive-row {
+  display: flex; gap: 6px; padding: 1px 0;
+  font-family: "Monaco", monospace; font-size: 10px;
+}
+.directive-row .t { flex: 0 0 auto; }
+.directive-row .m { flex: 1 1 auto; }
 .hint-input {
   display: flex; align-items: center; gap: 4px; margin-top: 4px;
   flex-wrap: wrap;

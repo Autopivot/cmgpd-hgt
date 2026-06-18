@@ -22,6 +22,10 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const COLOR_LOW  = '#993c1d';   // meanScoreGap <= -2
 const COLOR_MID  = '#f5f1e8';   // meanScoreGap ~= 0
 const COLOR_HIGH = '#0f6e56';   // meanScoreGap >= +2
+// Sequential palette (deploy mode, GT-free): low score → high score.
+// Anchors at the cell's actual min/max score range (computed per render).
+const SEQ_LOW  = '#f1ecdf';
+const SEQ_HIGH = '#3a6a8a';
 const BORDER_COLOR = '#888780';
 const STRIPE_COLOR = '#888780';
 const EMPTY_FILL   = '#ffffff';
@@ -41,6 +45,32 @@ export function renderHoneycomb(svgEl, layout, opts = {}) {
     const width = opts.width ?? 800;
     const height = opts.height ?? 600;
     const marginPx = opts.marginPx ?? 40;
+    const colorBy = opts.colorBy ?? 'gap';
+    const showStripes = opts.showStripes ?? (colorBy === 'gap');
+    const boundCellIds = opts.boundCellIds instanceof Set
+        ? opts.boundCellIds
+        : new Set(Array.isArray(opts.boundCellIds) ? opts.boundCellIds.map(Number) : []);
+
+    // Sequential mode needs the cohort-local score range to anchor the ramp.
+    let scoreMin = 0, scoreMax = 1;
+    if (colorBy === 'score') {
+        const populated = layout.cells.filter((c) => !c.empty);
+        if (populated.length) {
+            scoreMin = Infinity; scoreMax = -Infinity;
+            for (const c of populated) {
+                if (c.meanScore < scoreMin) scoreMin = c.meanScore;
+                if (c.meanScore > scoreMax) scoreMax = c.meanScore;
+            }
+            if (!isFinite(scoreMin) || scoreMax - scoreMin < 1e-6) { scoreMin = 0; scoreMax = 1; }
+        }
+    }
+    function cellFill(cell) {
+        if (colorBy === 'score') {
+            const t = (cell.meanScore - scoreMin) / (scoreMax - scoreMin);
+            return lerpHex(SEQ_LOW, SEQ_HIGH, Math.max(0, Math.min(1, t)));
+        }
+        return divergingColor(cell.meanScoreGap);
+    }
 
     // ----- Clear existing content -----
     while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
@@ -117,10 +147,12 @@ export function renderHoneycomb(svgEl, layout, opts = {}) {
 
         if (cell.empty) {
             poly.setAttribute('fill', EMPTY_FILL);
+            poly.setAttribute('fill-opacity', '0.35');
             poly.setAttribute('stroke', EMPTY_STROKE);
             poly.setAttribute('stroke-width', '0.5');
         } else {
-            poly.setAttribute('fill', divergingColor(cell.meanScoreGap));
+            poly.setAttribute('fill', cellFill(cell));
+            poly.setAttribute('fill-opacity', '0.78');
             poly.setAttribute('stroke', 'none');
         }
 
@@ -139,9 +171,10 @@ export function renderHoneycomb(svgEl, layout, opts = {}) {
     svgEl.appendChild(gCells);
 
     // ----- Layer 2: stripe overlay for outliers -----
+    // posRatio is GT-dependent — only meaningful in eval mode.
     const gStripes = document.createElementNS(SVG_NS, 'g');
     gStripes.setAttribute('class', 'hex-stripes');
-    if (stripeThresh > 0) {
+    if (showStripes && stripeThresh > 0) {
         for (const cell of populated) {
             if (Math.abs(cell.posRatio - baseline) > stripeThresh) {
                 const overlay = document.createElementNS(SVG_NS, 'polygon');
@@ -200,10 +233,29 @@ export function renderHoneycomb(svgEl, layout, opts = {}) {
     }
     svgEl.appendChild(gBorders);
 
-    // (Layer 4 — per-cluster score-gap mini-histograms — removed by user
-    // request: the bars added clutter without adding signal beyond what the
-    // diverging cell fill already shows. The cell colors are the
-    // distribution.)
+    // ----- Layer 4: bound-cell indicator dots -----
+    // A small gold dot at each cell with a saved 1882 rule profile, so the
+    // analyst can see at a glance which regions of the kinship-embedding
+    // space already have a transferable calibration.
+    if (boundCellIds.size) {
+        const gBound = document.createElementNS(SVG_NS, 'g');
+        gBound.setAttribute('class', 'hex-bound-dots');
+        gBound.setAttribute('pointer-events', 'none');
+        for (const cell of layout.cells) {
+            if (!boundCellIds.has(Number(cell.id))) continue;
+            const [cx, cy] = project(cell.cx, cell.cy);
+            const dot = document.createElementNS(SVG_NS, 'circle');
+            dot.setAttribute('class', 'cell-bound-dot');
+            dot.setAttribute('cx', cx.toFixed(2));
+            dot.setAttribute('cy', cy.toFixed(2));
+            dot.setAttribute('r', '2.6');
+            dot.setAttribute('fill', '#d4a85d');
+            dot.setAttribute('stroke', '#1a1a1a');
+            dot.setAttribute('stroke-width', '0.5');
+            gBound.appendChild(dot);
+        }
+        svgEl.appendChild(gBound);
+    }
 }
 
 // ============================================================================
