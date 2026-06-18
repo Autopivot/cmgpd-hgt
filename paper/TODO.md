@@ -148,6 +148,7 @@ Listed for completeness so future audits don't re-flag these:
 - §5.4 V3 algorithm (joint PCA(50) + MDS, X-means, 2–98 percentile clip, R=0.04, odd-q grid, capacity 12, MAX_INWARD=50 / MAX_OUTWARD=200, halving step, spiral angle += 0.7, radius += 2R every 8 iters, ±2-logit divergent ramp with `#993c1d / #f5f1e8 / #0f6e56`, 2σ stripe threshold, ε=1e-6 vertex match) — line-by-line verified against `viz/data/precompute.py`, `viz-mas/src/canonical/cluster_layout.js`, `viz-mas/src/canonical/honeycomb_render.js`.
 - §6 round labels (persona / impressions / deep-dive / rebuttals / alignment / final), `@everyone` / `@target` / `@c-XX` routing, `asyncio.Event` pause, per-call try/except heuristic fallback — matches `negotiator_rounds.py`.
 - §7 DS0003-to-DS0001 RECORD_NUMBER 1:1 join over 1,513,357 rows — measured.
+- §5.7 V6 kinship neighbourhood graph (k=1 person-only ego union over $\{r_{fs}, r_{fd}, r_{ms}, r_{md}, r_{sib}\}$; husband green r=9 / candidates amber r=8 with stroke ring / kin grey r=5; paternal solid, maternal dashed, sibling dotted; $r_{hw}$ added on accept in `#993c1d` stroke 2; d3-force link≈30 / charge≈−80, drag-to-pin with double-click release, mousewheel zoom $[0.3, 4]$; 200 ms fade to opacity 0.25 on `match-accepted`, revert on `match-restored`) — matches `viz-mas/src/components/RulerInjectorView.vue` and the `cohort-context` contract emitted by `AgentBattleView.vue`.
 
 ---
 

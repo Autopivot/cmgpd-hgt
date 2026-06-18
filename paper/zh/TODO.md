@@ -155,6 +155,7 @@
 - §5.4 V3 算法（联合 PCA(50) + MDS、X-means、2nd–98th 百分位裁剪、R=0.04、odd-q 网格、容量 12、MAX_INWARD=50 / MAX_OUTWARD=200、向心折半步长、外向螺旋 angle += 0.7、半径每 8 步 +2R、$\pm 2$ logits 三段式发散色阶、`#993c1d / #f5f1e8 / #0f6e56`、$2\sigma$ stripe 阈值、$\varepsilon = 10^{-6}$ 顶点匹配）—— 已逐行对照 `viz/data/precompute.py`、`viz-mas/src/canonical/cluster_layout.js`、`viz-mas/src/canonical/honeycomb_render.js`。
 - §6 round 标签（persona / impressions / deep-dive / rebuttals / alignment / final）、`@everyone` / `@target` / `@c-XX` 路由、`asyncio.Event` 暂停、per-call try/except 启发式回退 —— 与 `negotiator_rounds.py` 一致。
 - §7 DS0003 ↔ DS0001 RECORD_NUMBER 1:1 join 跨 1,513,357 行 —— 已实测。
+- §5.7 V6 亲属邻域图（$k=1$ 仅 person 节点的 ego 并集，边集 $\{r_{fs}, r_{fd}, r_{ms}, r_{md}, r_{sib}\}$；丈夫绿色 $r=9$、候选琥珀 $r=8$ 带描边、其他亲属浅灰 $r=5$；父系实线、母系虚线、兄弟姐妹点线；接受时新增 $r_{hw}$ 用 `#993c1d` stroke 宽 2；d3-force link≈30 / charge≈−80、拖拽钉住并双击解除、鼠标滚轮缩放范围 $[0.3, 4]$；`match-accepted` 时 200 ms 过渡淡至 opacity 0.25，`match-restored` 时还原）—— 与 `viz-mas/src/components/RulerInjectorView.vue` 及 `AgentBattleView.vue` 发出的 `cohort-context` 契约一致。
 
 ---
 
