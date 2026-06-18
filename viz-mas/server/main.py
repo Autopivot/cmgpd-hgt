@@ -266,6 +266,30 @@ def api_profile(person_id: str):
     return mas_get_profile(person_id)
 
 
+@app.get("/api/kinship/{person_id}")
+def api_kinship(person_id: str, k: int = 1):
+    """Return the focal person's k-hop person-only family subgraph
+    (parents, children, siblings) for the V6 candidate-graph UI.
+    Output ids always carry the "P" prefix."""
+    from .data.kinship_loader import khop_kinship
+    return khop_kinship(person_id, k=k)
+
+
+class _KinshipMultiBody(BaseModel):
+    person_ids: list[str]
+    k: int = 1
+
+
+@app.post("/api/kinship/multi")
+def api_kinship_multi(body: _KinshipMultiBody):
+    """Batched kinship lookup: merges the per-person subgraphs of every
+    id in `person_ids`, deduplicating nodes by id and edges by
+    (source, target, type). Used by V6 to render husband + top-K
+    candidates in a single canvas."""
+    from .data.kinship_loader import khop_kinship_multi
+    return khop_kinship_multi(body.person_ids, k=body.k)
+
+
 @app.get("/api/shap/{pair_id}")
 async def api_shap(pair_id: int, year: int, ablation: str = "ablated"):
     c = load_cohort(year, ablation)
