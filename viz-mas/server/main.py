@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import (
-    BackgroundTasks, FastAPI, HTTPException,
+    BackgroundTasks, FastAPI, HTTPException, Query,
     WebSocket, WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,6 +53,13 @@ from .mas import agent as mas_agent
 from .mas.negotiator import negotiate as mas_negotiate
 from .mas.state import state as mas_state
 from .mas.ws_broker import broker as mas_broker
+
+# DS0003 life-event + income loader (V5 narrative grounding for persona agents).
+# Imported at module top so tests can monkey-patch
+# `server.main.load_events` / `load_income` / `get_birth_year` directly.
+from .data.events_loader import (
+    get_birth_year, load_events, load_income,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 # Single canonical data source: D:/projects/VIS_2026/NEW/viz/data/. Both
@@ -209,6 +216,36 @@ async def api_pair(year: int, id: int, ablation: str = "ablated"):
     if not (0 <= id < len(c["pairs"])):
         raise HTTPException(404, f"pair id {id} out of range")
     return c["pairs"][id]
+
+
+@app.get("/api/narrative/{person_id}")
+def api_narrative(person_id: str, year: int = Query(..., ge=1700, le=2000)):
+    """Return a person's life-history timeline up to ``year``.
+
+    Powers the V5 (Agent Arena) per-persona narrative panel: each Qwen
+    agent (husband + each candidate wife) is grounded in the real DS0003
+    event stream and yearly income trace bounded above by the cohort
+    year. The window starts at the person's known birth year if DS0003
+    knows it, else `year - 80` (an upper bound on plausible lifespan)
+    so we still surface anything the loader can find.
+
+    The actual year filtering is performed by the loader; this endpoint
+    only normalises the person id and forwards `start`/`end` to it.
+    Returns 404 when DS0003 has neither events nor income for this id.
+    """
+    birth = get_birth_year(person_id)
+    start = birth if birth is not None else year - 80
+    events = load_events(person_id, start, year)
+    income = load_income(person_id, start, year)
+    if not events and not income:
+        raise HTTPException(status_code=404, detail="person not found")
+    normalized_id = person_id if person_id.startswith("P") else f"P{person_id}"
+    return {
+        "person_id": normalized_id,
+        "birth_year": birth,
+        "events": events,
+        "income": income,
+    }
 
 
 @app.get("/api/shap/{pair_id}")
