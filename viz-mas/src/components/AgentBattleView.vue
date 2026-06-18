@@ -275,6 +275,7 @@ async function loadHusband(id) {
     const n = await getNarrative(id, year)
     if (n && (n.events?.length || n.income?.length)) husbandNarrative.value = n
   } catch (_) { /* offline-safe */ }
+  bus.emit('cohort-context', { husband_id: id, candidate_ids: [] })
 }
 
 // ── Start the negotiation ──────────────────────────────────────────────
@@ -321,6 +322,7 @@ async function startBattle() {
 }
 
 function closeWS() {
+  bus.emit('cohort-context', { husband_id: null, candidate_ids: [] })
   if (activeWS) { try { activeWS.close() } catch {} ; activeWS = null }
   // Explicit reset — don't rely on ws.onclose firing, since a WS that
   // never finishes connecting won't ever dispatch 'close'.
@@ -353,6 +355,10 @@ function handleEvent(e) {
           eliminated: false,
         }))
         logSys(`filter: kept ${e.candidates.length}/${e.funnel.in_cohort}`)
+        bus.emit('cohort-context', {
+          husband_id: husband.value?.id ?? null,
+          candidate_ids: agents.value.map(a => a.id),
+        })
       }
       break
     case 'agent_prompt':
@@ -571,6 +577,7 @@ async function acceptRanked(r) {
 
 // ── Lifecycle ──────────────────────────────────────────────────────────
 watch(() => `${appState.year}|${appState.ablation}`, () => {
+  bus.emit('cohort-context', { husband_id: null, candidate_ids: [] })
   husband.value = null
   husbandProfile.value = null
   candidates.value = []
