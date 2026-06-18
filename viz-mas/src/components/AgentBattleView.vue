@@ -275,6 +275,8 @@ async function loadHusband(id) {
     const n = await getNarrative(id, year)
     if (n && (n.events?.length || n.income?.length)) husbandNarrative.value = n
   } catch (_) { /* offline-safe */ }
+  // V5 → V6 contract: husband loaded, no candidates yet (▶ arena not pressed).
+  bus.emit('cohort-context', { husband_id: id, candidate_ids: [] })
 }
 
 // ── Start the negotiation ──────────────────────────────────────────────
@@ -321,6 +323,8 @@ async function startBattle() {
 }
 
 function closeWS() {
+  // V5 → V6 contract: clear cohort context for downstream views.
+  bus.emit('cohort-context', { husband_id: null, candidate_ids: [] })
   if (activeWS) { try { activeWS.close() } catch {} ; activeWS = null }
   // Explicit reset — don't rely on ws.onclose firing, since a WS that
   // never finishes connecting won't ever dispatch 'close'.
@@ -353,6 +357,11 @@ function handleEvent(e) {
           eliminated: false,
         }))
         logSys(`filter: kept ${e.candidates.length}/${e.funnel.in_cohort}`)
+        // V5 → V6 contract: candidates populated.
+        bus.emit('cohort-context', {
+          husband_id: husband.value?.id ?? null,
+          candidate_ids: agents.value.map(a => a.id),
+        })
       }
       break
     case 'agent_prompt':
@@ -577,6 +586,8 @@ watch(() => `${appState.year}|${appState.ablation}`, () => {
   agents.value = []
   finalRanking.value = null
   accepted.value = null
+  // V5 → V6 contract: cohort context resets when the user changes year/ablation.
+  bus.emit('cohort-context', { husband_id: null, candidate_ids: [] })
   closeWS()
 })
 
